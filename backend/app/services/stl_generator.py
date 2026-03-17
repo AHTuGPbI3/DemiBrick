@@ -159,6 +159,50 @@ def generate_plate_stl(width: int, length: int) -> bytes:
     return _write_stl(verts, faces)
 
 
+def generate_calibration_strip() -> bytes:
+    """
+    Generate a calibration strip STL with 5 stud variants for tolerance testing.
+    Stud heights: 1.6, 1.7, 1.8, 1.9, 2.0 mm — print and find best fit.
+    """
+    meshes: list[tuple[np.ndarray, np.ndarray]] = []
+    heights = [1.6, 1.7, 1.8, 1.9, 2.0]
+    for i, sh in enumerate(heights):
+        x_off = i * STUD_PITCH * 2
+        # Baseplate for this section
+        meshes.append(_box_mesh(x_off, 0, 0, x_off + STUD_PITCH * 1.9, PLATE_HEIGHT, STUD_PITCH * 1.9))
+        # Single stud with this height variant
+        cx = x_off + STUD_PITCH
+        cz = STUD_PITCH
+        v, f = _cylinder_mesh(cx, cz, STUD_RADIUS, sh, PLATE_HEIGHT)
+        meshes.append((v, f))
+    verts, faces = _merge(meshes)
+    return _write_stl(verts, faces)
+
+
+def generate_brick_stl(w: int, d: int, h: int = 1) -> bytes:
+    """
+    Generate STL for a LEGO-compatible brick or plate.
+    w×d studs, h plate-heights tall (h=1 → plate 3.2mm, h=3 → brick 9.6mm).
+    """
+    plate_w = w * STUD_PITCH
+    plate_d = d * STUD_PITCH
+    brick_h = h * PLATE_HEIGHT
+
+    meshes: list[tuple[np.ndarray, np.ndarray]] = []
+    meshes.append(_box_mesh(0, 0, 0, plate_w, brick_h, plate_d))
+
+    # Studs on top
+    for sx in range(w):
+        for sd in range(d):
+            cx = (sx + 0.5) * STUD_PITCH
+            cz = (sd + 0.5) * STUD_PITCH
+            v, f = _cylinder_mesh(cx, cz, STUD_RADIUS, STUD_HEIGHT, brick_h)
+            meshes.append((v, f))
+
+    verts, faces = _merge(meshes)
+    return _write_stl(verts, faces)
+
+
 def generate_all_stls(bom: list[dict[str, Any]]) -> bytes:
     """
     Generate a ZIP file with one STL per unique plate type in BOM,
@@ -166,16 +210,18 @@ def generate_all_stls(bom: list[dict[str, Any]]) -> bytes:
     """
     buf = io.BytesIO()
 
-    # Unique plate types
-    plate_types: dict[str, tuple[int, int]] = {}
+    # Unique piece types (plates and bricks)
+    plate_types: dict[str, tuple[int, int, int]] = {}  # name → (w, d, h_layers)
     for entry in bom:
-        name = entry["name"]  # e.g. "Plate 2×4"
+        name = entry["name"]  # e.g. "Plate 2×4" or "Brick 2×4"
         if name not in plate_types:
             try:
-                # Parse "Plate WxH" or "Plate W×H"
-                dims = name.replace("×", "x").split(" ")[1].split("x")
-                w, h = int(dims[0]), int(dims[1])
-                plate_types[name] = (w, h)
+                parts = name.replace("×", "x").split(" ")
+                kind = parts[0].lower()   # "plate" or "brick"
+                dims = parts[1].split("x")
+                w, d = int(dims[0]), int(dims[1])
+                h_layers = 3 if kind == "brick" else 1
+                plate_types[name] = (w, d, h_layers)
             except Exception:
                 continue
 
@@ -193,14 +239,14 @@ def generate_all_stls(bom: list[dict[str, Any]]) -> bytes:
     for entry in bom:
         part_counts[entry["name"]] = part_counts.get(entry["name"], 0) + entry["count"]
 
-    for name, (w, h) in plate_types.items():
+    for name, (w, d, hl) in plate_types.items():
         count = part_counts.get(name, 0)
         readme += f"  {name}: {count} pcs\n"
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("README.txt", readme)
-        for name, (w, h) in plate_types.items():
-            stl_bytes = generate_plate_stl(w, h)
+        for name, (w, d, hl) in plate_types.items():
+            stl_bytes = generate_brick_stl(w, d, hl)
             filename = f"{name.replace(' ', '_').replace('×', 'x')}.stl"
             zf.writestr(filename, stl_bytes)
 

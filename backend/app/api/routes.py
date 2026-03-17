@@ -13,7 +13,11 @@ from app.services.bambu_colors import get_active_palette, set_active_palette, AL
 from app.services.brick_optimizer import optimize_layout
 from app.services.depth_estimation import estimate_depth, depth_to_layers, depth_to_preview
 from app.services.instruction_generator import generate_pdf
-from app.services.stl_generator import generate_all_stls
+from app.services.stl_generator import generate_all_stls, generate_calibration_strip, generate_brick_stl
+from app.services.mesh_cleaner import clean_mesh
+from app.services.voxelizer import voxelize_mesh, VALID_RESOLUTIONS as VOXEL_RESOLUTIONS
+from app.services.brick_optimizer_3d import optimize_layout_3d
+from app.services.ldraw_exporter import export_ldraw
 
 router = APIRouter()
 
@@ -233,3 +237,182 @@ async def set_palette(req: PaletteRequest):
     elif req.filament_types:
         set_active_palette(filament_types=req.filament_types)
     return {"active": get_active_palette()}
+
+
+# ── /3d/health ────────────────────────────────────────────────────────────────
+
+@router.get("/3d/health")
+async def health_3d():
+    """Check availability of TripoSR HuggingFace Spaces (non-blocking)."""
+    from app.services.reconstruction_3d import check_health  # noqa: PLC0415
+    try:
+        results = check_health()
+        available = [s for s, v in results.items() if v == "available"]
+        return {"spaces": results, "any_available": len(available) > 0}
+    except Exception as e:
+        return {"spaces": {}, "any_available": False, "error": str(e)}
+
+
+# ── /3d/reconstruct ───────────────────────────────────────────────────────────
+
+@router.post("/3d/reconstruct")
+async def reconstruct_3d(file: UploadFile = File(...)):
+    """
+    Photo → 3D mesh (GLB base64) via TripoSR.
+    Accepts the background-removed PNG from /remove-background.
+    """
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported type: {file.content_type}")
+    img_bytes = await file.read()
+    if len(img_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+
+    try:
+        from app.services.reconstruction_3d import reconstruct_3d as _reconstruct  # noqa: PLC0415
+        glb_bytes = _reconstruct(img_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"3D reconstruction failed: {e}")
+
+    # Also clean the mesh immediately
+    try:
+        glb_bytes = clean_mesh(glb_bytes)
+    except Exception:
+        pass  # use raw mesh if cleanup fails
+
+    b64 = base64.b64encode(glb_bytes).decode()
+    return {"model": f"data:model/gltf-binary;base64,{b64}"}
+
+
+# ── /3d/voxelize ──────────────────────────────────────────────────────────────
+
+class VoxelizeRequest(BaseModel):
+    model: str                             # data:model/gltf-binary;base64,...
+    resolution: int = 16
+    filament_types: list[str] = ["PLA Basic"]
+    custom_color_ids: list[str] = []
+
+
+@router.post("/3d/voxelize")
+async def voxelize_3d(req: VoxelizeRequest) -> dict[str, Any]:
+    if req.resolution not in VOXEL_RESOLUTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"resolution must be one of {list(VOXEL_RESOLUTIONS)}"
+        )
+    try:
+        _, b64 = req.model.split(",", 1)
+        mesh_bytes = base64.b64decode(b64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid model data: {e}")
+
+    try:
+        result = voxelize_mesh(
+            mesh_bytes,
+            resolution=req.resolution,
+            filament_types=req.filament_types or None,
+            custom_color_ids=req.custom_color_ids or None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Voxelization failed: {e}")
+
+    return result
+
+
+# ── /3d/optimize ──────────────────────────────────────────────────────────────
+
+class Optimize3DRequest(BaseModel):
+    voxel_grid: list[list[list]]           # [z][y][x] = color_id or None
+    hollow: bool = False
+
+
+@router.post("/3d/optimize")
+async def optimize_3d(req: Optimize3DRequest) -> dict[str, Any]:
+    if not req.voxel_grid:
+        raise HTTPException(status_code=400, detail="voxel_grid is empty")
+    try:
+        result = optimize_layout_3d(req.voxel_grid, hollow=req.hollow)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"3D optimization failed: {e}")
+    return result
+
+
+# ── /export/ldraw ─────────────────────────────────────────────────────────────
+
+class LDrawRequest(BaseModel):
+    bricks: list[dict[str, Any]]
+    title: str = "DemiBrick Model"
+
+
+@router.post("/export/ldraw")
+async def export_ldraw_endpoint(req: LDrawRequest):
+    try:
+        ldr_text = export_ldraw(req.bricks, title=req.title)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LDraw export failed: {e}")
+    return Response(
+        content=ldr_text.encode("utf-8"),
+        media_type="text/plain",
+        headers={"Content-Disposition": 'attachment; filename="demibrick_model.ldr"'},
+    )
+
+
+# ── /export/stl-full ──────────────────────────────────────────────────────────
+
+@router.post("/export/stl-full")
+async def export_stl_full(req: StlRequest):
+    """Same as /stl but aliased for the 3D pipeline."""
+    try:
+        zip_bytes = generate_all_stls(req.bom)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"STL generation failed: {e}")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="demibrick_3d_parts.zip"'},
+    )
+
+
+# ── /export/bom-csv ───────────────────────────────────────────────────────────
+
+class BomCsvRequest(BaseModel):
+    bom: list[dict[str, Any]]
+
+
+@router.post("/export/bom-csv")
+async def export_bom_csv(req: BomCsvRequest):
+    try:
+        lines = ["Color ID,Color Name,Filament Type,Hex Code,Brick Type,Quantity"]
+        for b in req.bom:
+            line = (
+                f"{b.get('color_id','')}"
+                f",\"{b.get('color_name','')}\""
+                f",\"Bambu {b.get('filament_type','')}\""
+                f",{b.get('color_hex', b.get('hex',''))}"
+                f",\"{b.get('name','')}\""
+                f",{b.get('count', 0)}"
+            )
+            lines.append(line)
+        csv_bytes = "\n".join(lines).encode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CSV export failed: {e}")
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="demibrick_parts.csv"'},
+    )
+
+
+# ── /calibration-strip ────────────────────────────────────────────────────────
+
+@router.get("/calibration-strip")
+async def calibration_strip():
+    """Download a calibration test print (5 stud height variants)."""
+    try:
+        stl_bytes = generate_calibration_strip()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Calibration strip failed: {e}")
+    return Response(
+        content=stl_bytes,
+        media_type="model/stl",
+        headers={"Content-Disposition": 'attachment; filename="calibration_strip.stl"'},
+    )
