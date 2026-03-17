@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --lego-yellow: #FFD700;
+  --lego-dark: #1A1A2E;
+}
+
+body {
+  background-color: #ffffff;
+  color: #1A1A2E;
+}
