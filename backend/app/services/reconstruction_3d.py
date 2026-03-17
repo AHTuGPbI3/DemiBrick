@@ -39,7 +39,7 @@ def _call_space(space: str, image_path: str) -> bytes:
     from gradio_client import Client, handle_file  # noqa: PLC0415
 
     token = HF_TOKEN or None
-    client = Client(space, hf_token=token)
+    client = Client(space, token=token)
 
     # --- Attempt 1: two-step (preprocess → generate) ---
     try:
