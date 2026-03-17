@@ -1,6 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
+
+const LegoPreview3D = lazy(() => import('./LegoPreview3D'))
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -42,7 +44,7 @@ interface Props {
   onReset: () => void
 }
 
-type Tab = 'preview' | 'bom'
+type Tab = 'preview' | '3d' | 'bom'
 
 export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
   const { preview, dimensions, color_summary, total_studs, pixel_grid } = mosaicData
@@ -77,10 +79,10 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
     <div className="space-y-5">
       {/* Tabs */}
       <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
-        {(['preview', 'bom'] as Tab[]).map((t) => (
+        {(['preview', '3d', 'bom'] as Tab[]).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${tab === t ? 'bg-white shadow text-[#1A1A2E]' : 'text-gray-400 hover:text-gray-600'}`}>
-            {t === 'preview' ? '🧱 Mosaic Preview' : '📋 Parts List (BOM)'}
+            {t === 'preview' ? '🧱 Preview' : t === '3d' ? '🔮 3D View' : '📋 Parts (BOM)'}
           </button>
         ))}
       </div>
@@ -131,6 +133,25 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
               </table>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Tab: 3D */}
+      {tab === '3d' && optResult && (
+        <Suspense fallback={<div className="h-64 flex items-center justify-center text-gray-400">Loading 3D…</div>}>
+          <LegoPreview3D
+            bricks={optResult.bricks.map((b: any) => ({
+              x: b.x, y: b.y, w: b.w, h: b.h,
+              hex: b.hex, layer: b.layer ?? 0,
+            }))}
+            gridW={dimensions.w}
+            gridH={dimensions.h}
+          />
+        </Suspense>
+      )}
+      {tab === '3d' && !optResult && (
+        <div className="h-64 flex items-center justify-center text-gray-400 text-sm">
+          {optimizing ? 'Optimizing bricks first…' : 'Run optimization to enable 3D view'}
         </div>
       )}
 
@@ -190,6 +211,24 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
         </div>
       )}
 
+      {/* Export buttons */}
+      {optResult && (
+        <div className="grid grid-cols-3 gap-2">
+          <ExportButton
+            label="📄 Instructions PDF"
+            onClick={() => downloadPDF(optResult, dimensions, total_studs)}
+          />
+          <ExportButton
+            label="🖨️ STL for 3D Print"
+            onClick={() => downloadSTL(optResult.bom)}
+          />
+          <ExportButton
+            label="📊 Parts List CSV"
+            onClick={() => downloadCSV(optResult.bom)}
+          />
+        </div>
+      )}
+
       {/* Actions */}
       <div className="flex gap-3 pt-1">
         <button onClick={onBack} className="px-5 py-3 rounded-xl border border-gray-200 text-sm font-semibold text-gray-500 hover:border-gray-400">
@@ -197,12 +236,6 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
         </button>
         <button onClick={onReset} className="px-5 py-3 rounded-xl border border-gray-200 text-sm font-semibold text-gray-500 hover:border-gray-400">
           ↺ New photo
-        </button>
-        <button
-          className="flex-1 bg-[#1A1A2E] text-white px-6 py-3 rounded-xl font-black hover:bg-[#2a2a4e] transition-colors"
-          onClick={() => alert('Coming in Phase 6: PDF Instructions + STL Export!')}
-        >
-          Export →
         </button>
       </div>
     </div>
@@ -217,4 +250,65 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
       <div className="text-xs text-gray-400 mt-0.5 uppercase tracking-widest">{label}</div>
     </div>
   )
+}
+
+function ExportButton({ label, onClick }: { label: string; onClick: () => void }) {
+  const [loading, setLoading] = useState(false)
+  return (
+    <button
+      onClick={async () => { setLoading(true); await onClick(); setLoading(false) }}
+      disabled={loading}
+      className="py-3 px-3 rounded-xl border-2 border-gray-200 text-xs font-bold text-[#1A1A2E] hover:border-[#FFD700] hover:bg-yellow-50 transition-all disabled:opacity-50 text-center"
+    >
+      {loading ? '…' : label}
+    </button>
+  )
+}
+
+async function downloadPDF(
+  optResult: OptimizeResult,
+  dimensions: { w: number; h: number },
+  total_studs: number,
+) {
+  const res = await fetch(`${API_URL}/api/instructions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bom: optResult.bom,
+      dimensions,
+      total_studs,
+      total_bricks: optResult.total_bricks,
+      optimization_ratio: optResult.optimization_ratio,
+    }),
+  })
+  if (!res.ok) { alert('PDF generation failed'); return }
+  const blob = await res.blob()
+  _triggerDownload(blob, 'demibrick_instructions.pdf')
+}
+
+async function downloadSTL(bom: BomEntry[]) {
+  const res = await fetch(`${API_URL}/api/stl`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bom }),
+  })
+  if (!res.ok) { alert('STL generation failed'); return }
+  const blob = await res.blob()
+  _triggerDownload(blob, 'demibrick_stl.zip')
+}
+
+function downloadCSV(bom: BomEntry[]) {
+  const header = 'Part#,Name,Color,Color ID,Qty\n'
+  const rows = bom.map(b =>
+    `${b.part},"${b.name}","${b.color_name}",${b.color_id},${b.count}`
+  ).join('\n')
+  const blob = new Blob([header + rows], { type: 'text/csv' })
+  _triggerDownload(blob, 'demibrick_parts.csv')
+}
+
+function _triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = filename; a.click()
+  URL.revokeObjectURL(url)
 }

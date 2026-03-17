@@ -3,6 +3,7 @@ import io
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import Response
 from pydantic import BaseModel
 from PIL import Image
 
@@ -10,6 +11,9 @@ from app.services.background_removal import remove_background
 from app.services.pixelizer import pixelize, generate_preview, VALID_RESOLUTIONS
 from app.services.lego_colors import LEGO_COLORS
 from app.services.brick_optimizer import optimize_layout
+from app.services.depth_estimation import estimate_depth, depth_to_layers, depth_to_preview
+from app.services.instruction_generator import generate_pdf
+from app.services.stl_generator import generate_all_stls
 
 router = APIRouter()
 
@@ -58,8 +62,9 @@ async def remove_bg(file: UploadFile = File(...)):
 # ── /pixelize ─────────────────────────────────────────────────────────────────
 
 class PixelizeRequest(BaseModel):
-    image: str       # data:image/png;base64,...
-    resolution: int  # 16 | 32 | 48 | 64
+    image: str            # data:image/png;base64,...
+    resolution: int       # 16 | 32 | 48 | 64
+    depth_layers: int = 1 # 1 = flat, 2-5 = relief
 
 
 @router.post("/pixelize")
@@ -108,13 +113,30 @@ async def pixelize_image(req: PixelizeRequest) -> dict[str, Any]:
 
     total_studs = sum(c["count"] for c in color_summary)
 
-    return {
+    response: dict[str, Any] = {
         "preview":       f"data:image/png;base64,{preview_b64}",
         "pixel_grid":    result["pixel_grid"],
         "dimensions":    {"w": result["width_studs"], "h": result["height_studs"]},
         "color_summary": color_summary,
         "total_studs":   total_studs,
     }
+
+    # Optional depth / relief
+    if req.depth_layers > 1:
+        try:
+            depth_map = estimate_depth(pil_img.convert("RGB"))
+            layers = depth_to_layers(depth_map, result["pixel_grid"], req.depth_layers)
+            depth_preview_img = depth_to_preview(depth_map)
+            buf2 = io.BytesIO()
+            depth_preview_img.save(buf2, format="PNG")
+            response["layers"]        = layers
+            response["depth_preview"] = "data:image/png;base64," + base64.b64encode(buf2.getvalue()).decode()
+            response["num_layers"]    = req.depth_layers
+        except Exception as e:
+            # Depth is optional — return flat if it fails
+            response["depth_error"] = str(e)
+
+    return response
 
 
 # ── /optimize ─────────────────────────────────────────────────────────────────
@@ -132,3 +154,51 @@ async def optimize(req: OptimizeRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")
     return result
+
+
+# ── /instructions ─────────────────────────────────────────────────────────────
+
+class InstructionsRequest(BaseModel):
+    bom: list[dict[str, Any]]
+    dimensions: dict[str, int]
+    total_studs: int
+    total_bricks: int
+    optimization_ratio: float
+
+
+@router.post("/instructions")
+async def instructions(req: InstructionsRequest):
+    try:
+        pdf_bytes = generate_pdf(
+            bom=req.bom,
+            dimensions=req.dimensions,
+            total_studs=req.total_studs,
+            total_bricks=req.total_bricks,
+            optimization_ratio=req.optimization_ratio,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="demibrick_instructions.pdf"'},
+    )
+
+
+# ── /stl ──────────────────────────────────────────────────────────────────────
+
+class StlRequest(BaseModel):
+    bom: list[dict[str, Any]]
+
+
+@router.post("/stl")
+async def stl_export(req: StlRequest):
+    try:
+        zip_bytes = generate_all_stls(req.bom)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"STL generation failed: {e}")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="demibrick_stl.zip"'},
+    )
