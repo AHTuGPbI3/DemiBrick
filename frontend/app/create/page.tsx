@@ -134,6 +134,9 @@ export default function CreatePage() {
   const [noBgUrl, setNoBgUrl]         = useState<string | null>(null)
   const [error, setError]             = useState<string | null>(null)
 
+  // 3D health status
+  const [triposrStatus, setTriposrStatus] = useState<'unknown'|'checking'|'ok'|'warn'>('unknown')
+
   // Mosaic state
   const [resolution, setResolution]   = useState(32)
   const [mosaicData, setMosaicData]   = useState<MosaicData | null>(null)
@@ -158,6 +161,16 @@ export default function CreatePage() {
     const t = setInterval(() => setFactIdx(i => (i + 1) % FUN_FACTS.length), 4000)
     return () => clearInterval(t)
   }, [step])
+
+  // Check TripoSR health when user picks 3D mode
+  useEffect(() => {
+    if (mode !== '3d') return
+    setTriposrStatus('checking')
+    fetch(`${API_URL}/api/3d/health`)
+      .then(r => r.json())
+      .then(d => setTriposrStatus(d.any_available ? 'ok' : 'warn'))
+      .catch(() => setTriposrStatus('warn'))
+  }, [mode])
 
   const visibleColors = BAMBU_COLORS.filter(c =>
     c.type === 'PLA Basic' ? usePlaBasic : usePlaMatte
@@ -381,9 +394,23 @@ export default function CreatePage() {
 
       {/* Error banner */}
       {error && (
-        <div className="mb-6 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600 flex justify-between">
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="underline text-red-400 ml-4">✕</button>
+        <div className="mb-6 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600 space-y-2">
+          <div className="flex justify-between items-start">
+            <span>{error}</span>
+            <button onClick={() => setError(null)} className="underline text-red-400 ml-4 flex-shrink-0">✕</button>
+          </div>
+          {mode === '3d' && (
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => { setError(null); setStep('mesh_preview') }}
+                className="text-xs px-3 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 font-semibold">
+                ↺ Retry 3D
+              </button>
+              <button onClick={() => { setMode('mosaic'); setError(null); setStep(noBgUrl ? 'pixelize' : 'preview') }}
+                className="text-xs px-3 py-1.5 rounded-lg border border-red-200 hover:bg-red-50 font-semibold">
+                🧱 Switch to Mosaic instead
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -392,9 +419,14 @@ export default function CreatePage() {
         <div className="space-y-4">
           <ImageDropzone onFile={handleFile} />
           {mode === '3d' && (
-            <div className="text-xs text-center text-gray-400 bg-gray-50 rounded-xl p-3 border border-gray-100">
-              3D mode uses <strong>TripoSR</strong> on HuggingFace — reconstruction takes 30–90 seconds.
-              Best results with isolated objects on a clean background.
+            <div className="text-xs text-center bg-gray-50 rounded-xl p-3 border border-gray-100 space-y-1">
+              <div className="flex items-center justify-center gap-2">
+                {triposrStatus === 'checking' && <><span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />Checking TripoSR availability…</>}
+                {triposrStatus === 'ok'       && <><span className="w-2 h-2 rounded-full bg-green-400" />TripoSR is available — ready to reconstruct</>}
+                {triposrStatus === 'warn'     && <><span className="w-2 h-2 rounded-full bg-red-400" />TripoSR may be busy — queued spaces will be tried</>}
+                {triposrStatus === 'unknown'  && <><span className="w-2 h-2 rounded-full bg-gray-300" />3D mode: TripoSR on HuggingFace</>}
+              </div>
+              <p className="text-gray-400">Reconstruction takes 30–90 sec. Best with isolated objects on clean BG.</p>
             </div>
           )}
         </div>

@@ -2,10 +2,14 @@ import base64
 import io
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 from PIL import Image
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 
 from app.services.background_removal import remove_background
 from app.services.pixelizer import pixelize, generate_preview, VALID_RESOLUTIONS
@@ -256,7 +260,8 @@ async def health_3d():
 # ── /3d/reconstruct ───────────────────────────────────────────────────────────
 
 @router.post("/3d/reconstruct")
-async def reconstruct_3d(file: UploadFile = File(...)):
+@limiter.limit("3/minute")
+async def reconstruct_3d(request: Request, file: UploadFile = File(...)):
     """
     Photo → 3D mesh (GLB base64) via TripoSR.
     Accepts the background-removed PNG from /remove-background.
