@@ -9,7 +9,7 @@ from PIL import Image
 
 from app.services.background_removal import remove_background
 from app.services.pixelizer import pixelize, generate_preview, VALID_RESOLUTIONS
-from app.services.lego_colors import LEGO_COLORS
+from app.services.bambu_colors import get_active_palette, set_active_palette, ALL_COLORS
 from app.services.brick_optimizer import optimize_layout
 from app.services.depth_estimation import estimate_depth, depth_to_layers, depth_to_preview
 from app.services.instruction_generator import generate_pdf
@@ -62,9 +62,11 @@ async def remove_bg(file: UploadFile = File(...)):
 # ── /pixelize ─────────────────────────────────────────────────────────────────
 
 class PixelizeRequest(BaseModel):
-    image: str            # data:image/png;base64,...
-    resolution: int       # 16 | 32 | 48 | 64
-    depth_layers: int = 1 # 1 = flat, 2-5 = relief
+    image: str                          # data:image/png;base64,...
+    resolution: int                     # 16 | 32 | 48 | 64
+    depth_layers: int = 1               # 1 = flat, 2-5 = relief
+    filament_types: list[str] = ["PLA Basic"]
+    custom_color_ids: list[str] = []    # if non-empty, overrides filament_types
 
 
 @router.post("/pixelize")
@@ -83,6 +85,12 @@ async def pixelize_image(req: PixelizeRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image data: {e}")
 
+    # Set active palette before pixelizing
+    if req.custom_color_ids:
+        set_active_palette(custom_ids=req.custom_color_ids)
+    else:
+        set_active_palette(filament_types=req.filament_types)
+
     try:
         result = pixelize(pil_img, req.resolution)
     except Exception as e:
@@ -99,14 +107,16 @@ async def pixelize_image(req: PixelizeRequest) -> dict[str, Any]:
 
     # Build color summary
     from collections import Counter
+    palette = get_active_palette()
     flat = [idx for row in result["pixel_grid"] for idx in row if idx is not None]
     counts = Counter(flat)
     color_summary = [
         {
-            "color_id": LEGO_COLORS[idx]["id"],
-            "name":     LEGO_COLORS[idx]["name"],
-            "hex":      LEGO_COLORS[idx]["hex"],
-            "count":    cnt,
+            "color_id":      palette[idx]["id"],
+            "name":          palette[idx]["name"],
+            "hex":           palette[idx]["hex"],
+            "filament_type": palette[idx]["type"],
+            "count":         cnt,
         }
         for idx, cnt in sorted(counts.items(), key=lambda x: -x[1])
     ]
@@ -202,3 +212,24 @@ async def stl_export(req: StlRequest):
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="demibrick_stl.zip"'},
     )
+
+
+# ── /palette ──────────────────────────────────────────────────────────────────
+
+class PaletteRequest(BaseModel):
+    filament_types: list[str] = []
+    custom_ids: list[str] = []
+
+
+@router.get("/palette")
+async def get_palette():
+    return {"colors": ALL_COLORS}
+
+
+@router.post("/palette")
+async def set_palette(req: PaletteRequest):
+    if req.custom_ids:
+        set_active_palette(custom_ids=req.custom_ids)
+    elif req.filament_types:
+        set_active_palette(filament_types=req.filament_types)
+    return {"active": get_active_palette()}

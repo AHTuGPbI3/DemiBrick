@@ -7,17 +7,19 @@ const LegoPreview3D = lazy(() => import('./LegoPreview3D'))
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 interface ColorEntry {
-  color_id: number
+  color_id: string
   name: string
   hex: string
+  filament_type: string
   count: number
 }
 
 interface BomEntry {
   part: string
   name: string
-  color_id: number
+  color_id: string
   color_name: string
+  filament_type: string
   hex: string
   count: number
 }
@@ -124,7 +126,10 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
                       <td className="px-3 py-1.5">
                         <span className="inline-block w-5 h-5 rounded border border-gray-200" style={{ backgroundColor: c.hex }} />
                       </td>
-                      <td className="px-3 py-1.5 font-medium text-[#1A1A2E]">{c.name}</td>
+                      <td className="px-3 py-1.5 font-medium text-[#1A1A2E]">
+                        {c.name}
+                        <span className="ml-1 text-xs text-gray-400 font-normal">Bambu {c.filament_type}</span>
+                      </td>
                       <td className="px-3 py-1.5 text-right text-gray-600">{c.count}</td>
                       <td className="px-3 py-1.5 text-right text-gray-400">{((c.count / total_studs) * 100).toFixed(1)}%</td>
                     </tr>
@@ -180,6 +185,9 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
                 &nbsp;·&nbsp;
                 <span className="text-[#FFD700] font-black">{optResult.optimization_ratio}× optimization</span>
               </div>
+
+              {/* Shopping list */}
+              <ShoppingList colorSummary={color_summary} />
               <div className="rounded-xl border border-gray-100 overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-xs text-gray-400 uppercase tracking-widest">
@@ -198,7 +206,9 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
                         </td>
                         <td className="px-3 py-1.5 text-gray-400 font-mono text-xs">{b.part}</td>
                         <td className="px-3 py-1.5 text-[#1A1A2E] font-medium">
-                          {b.name} <span className="text-gray-400 font-normal">— {b.color_name}</span>
+                          {b.name}
+                          <span className="text-gray-400 font-normal"> — {b.color_name}</span>
+                          <span className="ml-1 text-xs text-gray-300">Bambu {b.filament_type}</span>
                         </td>
                         <td className="px-3 py-1.5 text-right font-bold text-[#1A1A2E]">{b.count}</td>
                       </tr>
@@ -298,12 +308,40 @@ async function downloadSTL(bom: BomEntry[]) {
 }
 
 function downloadCSV(bom: BomEntry[]) {
-  const header = 'Part#,Name,Color,Color ID,Qty\n'
+  const header = 'Color ID,Color Name,Filament Type,Hex Code,Brick Type,Quantity\n'
   const rows = bom.map(b =>
-    `${b.part},"${b.name}","${b.color_name}",${b.color_id},${b.count}`
+    `${b.color_id},"${b.color_name}","Bambu ${b.filament_type}",${b.hex},"${b.name}",${b.count}`
   ).join('\n')
   const blob = new Blob([header + rows], { type: 'text/csv' })
   _triggerDownload(blob, 'demibrick_parts.csv')
+}
+
+function ShoppingList({ colorSummary }: { colorSummary: ColorEntry[] }) {
+  const spools = colorSummary.reduce<Record<string, { name: string; type: string; hex: string; bricks: number }>>((acc, c) => {
+    const key = c.color_id
+    if (!acc[key]) acc[key] = { name: c.name, type: c.filament_type, hex: c.hex, bricks: 0 }
+    acc[key].bricks += c.count
+    return acc
+  }, {})
+  const list = Object.values(spools).sort((a, b) => b.bricks - a.bricks)
+  return (
+    <div className="rounded-xl border border-gray-100 p-4 space-y-2">
+      <p className="text-sm font-bold text-[#1A1A2E]">You need these Bambu Lab spools:</p>
+      {list.map((s, i) => (
+        <div key={i} className="flex items-center gap-3 text-sm">
+          <span className="w-4 h-4 rounded border border-gray-200 flex-shrink-0" style={{ backgroundColor: s.hex }} />
+          <span className="flex-1 text-[#1A1A2E]">
+            {s.name}
+            <span className="text-gray-400 font-normal ml-1">({s.type})</span>
+          </span>
+          <span className="text-gray-500">{s.bricks.toLocaleString()} bricks</span>
+        </div>
+      ))}
+      <p className="text-xs text-gray-400 pt-1 border-t border-gray-100">
+        Total: {list.length} spool{list.length !== 1 ? 's' : ''} needed
+      </p>
+    </div>
+  )
 }
 
 function _triggerDownload(blob: Blob, filename: string) {

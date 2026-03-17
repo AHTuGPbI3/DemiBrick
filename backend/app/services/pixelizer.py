@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw
 
-from app.services.lego_colors import LEGO_COLORS, find_nearest_lego_color_batch
+from app.services.bambu_colors import get_active_palette, find_nearest_color_batch
 
 VALID_RESOLUTIONS = (16, 32, 48, 64)
 
@@ -39,8 +39,8 @@ def pixelize(image: Image.Image, resolution: int) -> dict[str, Any]:
     alpha = rgba[:, :, 3]                    # (H, W)
     rgb   = rgba[:, :, :3]                   # (H, W, 3)
 
-    # Nearest LEGO color index for every pixel
-    color_indices = find_nearest_lego_color_batch(rgb)  # (H, W) → index in LEGO_COLORS
+    # Nearest Bambu color index for every pixel (index into active palette)
+    color_indices = find_nearest_color_batch(rgb)  # (H, W)
 
     # Build pixel_grid (None for transparent pixels)
     h, w = color_indices.shape
@@ -58,7 +58,8 @@ def pixelize(image: Image.Image, resolution: int) -> dict[str, Any]:
                 used_ids.add(idx)
         pixel_grid.append(grid_row)
 
-    color_map = [LEGO_COLORS[i] for i in sorted(used_ids)]
+    palette = get_active_palette()
+    color_map = [palette[i] for i in sorted(used_ids)]
 
     return {
         "pixel_grid": pixel_grid,
@@ -100,7 +101,7 @@ def generate_preview(
                 draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=checker)
                 continue
 
-            color = LEGO_COLORS[idx]
+            color = get_active_palette()[idx]
             r, g, b = color["rgb"]
 
             # Brick face

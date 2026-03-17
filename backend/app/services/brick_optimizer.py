@@ -8,7 +8,7 @@ from collections import defaultdict
 from typing import Any
 
 from app.services.lego_bricks import SORTED_PLATES, all_orientations
-from app.services.lego_colors import LEGO_COLORS
+from app.services.bambu_colors import get_active_palette
 
 
 def _can_place(
@@ -67,13 +67,15 @@ def optimize_layout(pixel_grid: list[list[int | None]]) -> dict[str, Any]:
                     if _can_place(occupied, r, c, pw, ph, pixel_grid, color_idx):
                         _mark_occupied(occupied, r, c, pw, ph)
                         orientation = "horizontal" if pw >= ph else "vertical"
+                        palette = get_active_palette()
                         bricks.append({
-                            "part":        base_plate.part_number,
-                            "name":        base_plate.name,
-                            "color_idx":   color_idx,
-                            "color_id":    LEGO_COLORS[color_idx]["id"],
-                            "color_name":  LEGO_COLORS[color_idx]["name"],
-                            "hex":         LEGO_COLORS[color_idx]["hex"],
+                            "part":          base_plate.part_number,
+                            "name":          base_plate.name,
+                            "color_idx":     color_idx,
+                            "color_id":      palette[color_idx]["id"],
+                            "color_name":    palette[color_idx]["name"],
+                            "filament_type": palette[color_idx]["type"],
+                            "hex":           palette[color_idx]["hex"],
                             "x":           c,
                             "y":           r,
                             "w":           pw,
@@ -88,17 +90,18 @@ def optimize_layout(pixel_grid: list[list[int | None]]) -> dict[str, Any]:
     # Build BOM
     bom_counter: dict[tuple, int] = defaultdict(int)
     for b in bricks:
-        key = (b["part"], b["name"], b["color_idx"], b["color_id"], b["color_name"], b["hex"])
+        key = (b["part"], b["name"], b["color_idx"], b["color_id"], b["color_name"], b["filament_type"], b["hex"])
         bom_counter[key] += 1
 
     bom = [
         {
-            "part":       k[0],
-            "name":       k[1],
-            "color_id":   k[3],
-            "color_name": k[4],
-            "hex":        k[5],
-            "count":      v,
+            "part":          k[0],
+            "name":          k[1],
+            "color_id":      k[3],
+            "color_name":    k[4],
+            "filament_type": k[5],
+            "hex":           k[6],
+            "count":         v,
         }
         for k, v in sorted(bom_counter.items(), key=lambda x: -x[1])
     ]
