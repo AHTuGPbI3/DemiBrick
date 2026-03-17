@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useMemo, Suspense } from 'react'
+import { useRef, useMemo, useState, Suspense } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
 import * as THREE from 'three'
@@ -132,15 +132,8 @@ export default function LegoPreview3D({ bricks, gridW, gridH }: Props) {
   const maxDim = Math.max(gridW, gridH)
   const camDist = maxDim * STUD_W * 1.8
 
-  const [showGrid, setShowGrid]           = useMemo(() => [true, (v: boolean) => {}], []) as any
-  const [showGridState, setShowGridState] = useMemo(() => {
-    let s = true
-    return [s, (v: boolean) => { s = v }]
-  }, []) as [boolean, (v: boolean) => void]
-
-  // Use React state properly
-  const [grid, setGrid]   = require('react').useState(true)
-  const [camPreset, setCam] = require('react').useState<'perspective' | 'top' | 'front'>('perspective')
+  const [grid, setGrid]     = useState(true)
+  const [camPreset, setCam] = useState<'perspective' | 'top' | 'front'>('perspective')
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
