@@ -5,8 +5,16 @@ No rembg / pymatting / numba dependency — works on any Python 3.11+.
 
 import io
 import os
+import ssl
 import urllib.request
 from pathlib import Path
+
+# Fix macOS SSL: use certifi bundle if system certs are missing
+try:
+    import certifi
+    _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _ssl_ctx = ssl.create_default_context()
 
 import numpy as np
 from PIL import Image
@@ -22,7 +30,9 @@ _session = None  # lazy-loaded onnxruntime session
 def _download_model():
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     print(f"[DemiBrick] Downloading U2Net model to {MODEL_PATH} …")
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    req = urllib.request.Request(MODEL_URL)
+    with urllib.request.urlopen(req, context=_ssl_ctx) as resp, open(MODEL_PATH, "wb") as f:
+        f.write(resp.read())
     print("[DemiBrick] Model downloaded.")
 
 
