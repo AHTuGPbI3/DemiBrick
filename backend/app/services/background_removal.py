@@ -60,9 +60,9 @@ def _get_session():
 
 def _normalize(img_np: np.ndarray) -> np.ndarray:
     """Normalize to U2Net input range [0, 1] with ImageNet mean/std."""
-    mean = np.array([0.485, 0.456, 0.406])
-    std  = np.array([0.229, 0.224, 0.225])
-    return (img_np / 255.0 - mean) / std
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    return ((img_np / 255.0) - mean) / std
 
 
 def _run_u2net(pil_img: Image.Image) -> np.ndarray:
