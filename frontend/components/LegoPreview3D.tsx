@@ -49,7 +49,7 @@ function BrickMesh({ bricks }: { bricks: Brick[] }) {
 function BrickGroup({ hex, bricks }: { hex: string; bricks: Brick[] }) {
   const color   = useMemo(() => new THREE.Color(hex), [hex])
   const darkCol = useMemo(() => new THREE.Color(hex).multiplyScalar(0.75), [hex])
-  const lightCol= useMemo(() => new THREE.Color(hex).multiplyScalar(1.3).clampLength(0, 1), [hex])
+  const lightCol= useMemo(() => { const c = new THREE.Color(hex).multiplyScalar(1.3); c.r = Math.min(c.r,1); c.g = Math.min(c.g,1); c.b = Math.min(c.b,1); return c }, [hex])
 
   return (
     <>
