@@ -105,6 +105,7 @@ interface ColorEntry {
 interface MosaicData {
   preview: string; pixel_grid: (number | null)[][]
   dimensions: { w: number; h: number }; color_summary: ColorEntry[]; total_studs: number
+  layers?: (number | null)[][][]; depth_preview?: string; num_layers?: number
 }
 interface VoxelData {
   voxel_grid: (string | null)[][][]; dimensions: { w: number; d: number; h: number }
@@ -139,6 +140,7 @@ export default function CreatePage() {
 
   // Mosaic state
   const [resolution, setResolution]   = useState(32)
+  const [depthLayers, setDepthLayers] = useState(1)
   const [mosaicData, setMosaicData]   = useState<MosaicData | null>(null)
 
   // 3D state
@@ -225,7 +227,7 @@ export default function CreatePage() {
     try {
       const res = await fetch(`${API_URL}/api/pixelize`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: noBgUrl, resolution, ...getFilamentPayload() }),
+        body: JSON.stringify({ image: noBgUrl, resolution, depth_layers: depthLayers, ...getFilamentPayload() }),
       })
       if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `Server error ${res.status}`) }
       setMosaicData(await res.json()); setStep('result')
@@ -456,6 +458,7 @@ export default function CreatePage() {
         <MosaicConfigStep
           originalUrl={originalUrl!} noBgUrl={noBgUrl}
           resolution={resolution} onResolution={setResolution}
+          depthLayers={depthLayers} onDepthLayers={setDepthLayers}
           usePlaBasic={usePlaBasic} setUsePlaBasic={setUsePlaBasic}
           usePlaMatte={usePlaMatte} setUsePlaMatte={setUsePlaMatte}
           showColorPicker={showColorPicker} setShowColorPicker={setShowColorPicker}
@@ -633,8 +636,17 @@ function FilamentPicker({
   )
 }
 
+const DEPTH_OPTIONS = [
+  { value: 1, label: 'Flat',  desc: 'Standard mosaic' },
+  { value: 2, label: '2',     desc: '2 layers' },
+  { value: 3, label: '3',     desc: '3 layers' },
+  { value: 4, label: '4',     desc: '4 layers' },
+  { value: 5, label: '5',     desc: '5 layers' },
+]
+
 function MosaicConfigStep({
   originalUrl, noBgUrl, resolution, onResolution, resolutions,
+  depthLayers, onDepthLayers,
   usePlaBasic, setUsePlaBasic, usePlaMatte, setUsePlaMatte,
   showColorPicker, setShowColorPicker, customIds, setCustomIds,
   visibleColors, toggleCustomId, isLoading, onBack, onGo, goLabel,
@@ -671,6 +683,30 @@ function MosaicConfigStep({
           {resolutions.map(({ value, label, desc }: any) => (
             <button key={value} onClick={() => onResolution(value)}
               className={`py-3 rounded-xl border-2 text-center transition-all ${resolution === value ? 'border-[#FFD700] bg-yellow-50' : 'border-gray-200 hover:border-gray-400'}`}>
+              <div className="font-black text-lg text-[#1A1A2E]">{label}</div>
+              <div className="text-xs text-gray-400">{desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Relief depth */}
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <p className="text-sm font-bold text-[#1A1A2E]">Relief Depth</p>
+          {depthLayers > 1 && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-semibold">2.5D</span>
+          )}
+        </div>
+        <p className="text-xs text-gray-400 mb-3">
+          {depthLayers === 1
+            ? 'Flat — standard single-layer mosaic'
+            : `${depthLayers} layers — depth estimated from image, foreground raised`}
+        </p>
+        <div className="grid grid-cols-5 gap-2">
+          {DEPTH_OPTIONS.map(({ value, label, desc }) => (
+            <button key={value} onClick={() => onDepthLayers(value)}
+              className={`py-3 rounded-xl border-2 text-center transition-all ${depthLayers === value ? 'border-[#FFD700] bg-yellow-50' : 'border-gray-200 hover:border-gray-400'}`}>
               <div className="font-black text-lg text-[#1A1A2E]">{label}</div>
               <div className="text-xs text-gray-400">{desc}</div>
             </button>

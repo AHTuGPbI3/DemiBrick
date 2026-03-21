@@ -38,6 +38,9 @@ export interface MosaicData {
   dimensions: { w: number; h: number }
   color_summary: ColorEntry[]
   total_studs: number
+  layers?: (number | null)[][][]
+  depth_preview?: string
+  num_layers?: number
 }
 
 interface Props {
@@ -49,7 +52,7 @@ interface Props {
 type Tab = 'preview' | '3d' | 'bom'
 
 export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
-  const { preview, dimensions, color_summary, total_studs, pixel_grid } = mosaicData
+  const { preview, dimensions, color_summary, total_studs, pixel_grid, depth_preview, num_layers } = mosaicData
   const [tab, setTab]               = useState<Tab>('preview')
   const [optimizing, setOptimizing] = useState(false)
   const [optResult, setOptResult]   = useState<OptimizeResult | null>(null)
@@ -90,10 +93,13 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className={`grid gap-2 ${num_layers && num_layers > 1 ? 'grid-cols-5' : 'grid-cols-4'}`}>
         <StatCard label="Studs" value={total_studs.toLocaleString()} />
         <StatCard label="Size" value={`${dimensions.w}×${dimensions.h}`} />
         <StatCard label="Colors" value={color_summary.length} />
+        {num_layers && num_layers > 1 && (
+          <StatCard label="Layers" value={num_layers} sub="2.5D relief" />
+        )}
         <StatCard
           label="Bricks"
           value={optimizing ? '…' : optResult ? optResult.total_bricks.toLocaleString() : '—'}
@@ -104,9 +110,26 @@ export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
       {/* Tab: Preview */}
       {tab === 'preview' && (
         <div className="space-y-4">
-          <div className="rounded-2xl overflow-hidden border border-gray-100 bg-gray-50 flex items-center justify-center" style={{ minHeight: 260 }}>
-            <img src={preview} alt="LEGO mosaic" className="max-h-96 max-w-full object-contain" style={{ imageRendering: 'pixelated' }} />
-          </div>
+          {depth_preview ? (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-widest text-center">Mosaic</p>
+                <div className="rounded-2xl overflow-hidden border border-gray-100 bg-gray-50 flex items-center justify-center" style={{ minHeight: 200 }}>
+                  <img src={preview} alt="LEGO mosaic" className="max-h-64 max-w-full object-contain" style={{ imageRendering: 'pixelated' }} />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-[#FFD700] uppercase tracking-widest text-center">Depth map</p>
+                <div className="rounded-2xl overflow-hidden border border-gray-100 bg-gray-50 flex items-center justify-center" style={{ minHeight: 200 }}>
+                  <img src={depth_preview} alt="Depth map" className="max-h-64 max-w-full object-contain" style={{ imageRendering: 'pixelated' }} />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl overflow-hidden border border-gray-100 bg-gray-50 flex items-center justify-center" style={{ minHeight: 260 }}>
+              <img src={preview} alt="LEGO mosaic" className="max-h-96 max-w-full object-contain" style={{ imageRendering: 'pixelated' }} />
+            </div>
+          )}
           {/* Color breakdown */}
           <div>
             <p className="text-sm font-bold text-[#1A1A2E] mb-2">Color Breakdown</p>
