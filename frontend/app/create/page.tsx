@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import ImageDropzone from '@/components/ImageDropzone'
 import MosaicResult from '@/components/MosaicResult'
+import MaskEditor from '@/components/MaskEditor'
+import BrickEditor from '@/components/BrickEditor'
 
 const BrickModel3D = lazy(() => import('@/components/BrickModel3D'))
 
@@ -12,7 +14,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 type AppMode = 'mosaic' | '3d'
 type Step =
   | 'upload' | 'preview' | 'removing'
-  | 'pixelize' | 'pixelizing' | 'result'          // mosaic
+  | 'mask-edit' | 'pixelize' | 'pixelizing' | 'brick-edit' | 'result'   // mosaic
   | 'reconstructing' | 'mesh_preview'              // 3D – mesh
   | 'voxelizing' | 'optimizing3d' | 'result3d'    // 3D – bricks
 
@@ -117,6 +119,17 @@ interface BrickEntry {
   color_hex: string; color_id: string; color_name: string; part: string; name: string
   filament_type: string; layer: number
 }
+interface BomEntry {
+  part: string; name: string; color_id: string; color_name: string
+  filament_type: string; hex: string; count: number
+}
+interface MosaicOptResult {
+  bricks: object[]
+  bom: BomEntry[]
+  total_bricks: number
+  total_1x1_equivalent: number
+  optimization_ratio: number
+}
 interface BomEntry3D {
   part: string; name: string; color_id: string; color_name: string
   color_hex: string; hex: string; filament_type: string; count: number
@@ -139,9 +152,10 @@ export default function CreatePage() {
   const [triposrStatus, setTriposrStatus] = useState<'unknown'|'checking'|'ok'|'warn'>('unknown')
 
   // Mosaic state
-  const [resolution, setResolution]   = useState(32)
-  const [depthLayers, setDepthLayers] = useState(1)
-  const [mosaicData, setMosaicData]   = useState<MosaicData | null>(null)
+  const [resolution, setResolution]       = useState(32)
+  const [depthLayers, setDepthLayers]     = useState(1)
+  const [mosaicData, setMosaicData]       = useState<MosaicData | null>(null)
+  const [mosaicOptResult, setMosaicOptResult] = useState<MosaicOptResult | null>(null)
 
   // 3D state
   const [resolution3d, setResolution3d] = useState(16)
@@ -316,7 +330,7 @@ export default function CreatePage() {
       if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `Server error ${res.status}`) }
       const data = await res.json()
       setNoBgUrl(data.image)
-      setStep(mode === '3d' ? 'mesh_preview' : 'pixelize')
+      setStep(mode === '3d' ? 'mesh_preview' : 'mask-edit')
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unknown error')
       setStep('preview')
@@ -328,6 +342,7 @@ export default function CreatePage() {
     setNoBgUrl(null); setMosaicData(null); setModel3dUrl(null)
     setVoxelData(null); setOpt3dResult(null); setError(null)
     setL2Preview(null); setL2Grid(null); setL2Dims(null); setL2Colors(null); setL2Studs(0)
+    setMosaicOptResult(null)
     noBgImgRef.current = null
   }
 
@@ -355,7 +370,7 @@ export default function CreatePage() {
         if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `Server error ${res.status}`) }
         data = await res.json()
       }
-      setMosaicData(data); setStep('result')
+      setMosaicData(data); setMosaicOptResult(null); setStep('brick-edit')
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unknown error'); setStep('pixelize')
     }
@@ -465,12 +480,16 @@ export default function CreatePage() {
 
   const isLoading = ['removing','pixelizing','reconstructing','voxelizing','optimizing3d'].includes(step)
 
+  const activePaletteForEditor = customIds !== null
+    ? BAMBU_COLORS.filter(c => customIds!.includes(c.id))
+    : BAMBU_COLORS.filter(c => c.type === 'PLA Basic' ? usePlaBasic : usePlaMatte)
+
   // ── Step labels ────────────────────────────────────────────────────────────
-  const mosaicStepLabels = ['Upload', 'Remove BG', 'Filament & Res', 'Export']
+  const mosaicStepLabels = ['Upload', 'Remove BG', 'Mask', 'Config', 'Edit', 'Export']
   const _3dStepLabels    = ['Upload', 'Remove BG', 'Reconstruct 3D', 'Brickify', 'Export']
 
   const stepLabels = mode === 'mosaic' ? mosaicStepLabels : _3dStepLabels
-  const mosaicStepOrder: Step[] = ['upload','preview','pixelize','result']
+  const mosaicStepOrder: Step[] = ['upload','preview','mask-edit','pixelize','brick-edit','result']
   const _3dStepOrder: Step[]    = ['upload','preview','mesh_preview','voxelizing','result3d']
 
   const stepOrder = mode === 'mosaic' ? mosaicStepOrder : _3dStepOrder
@@ -578,6 +597,28 @@ export default function CreatePage() {
         </div>
       )}
 
+      {/* ── MOSAIC: MASK EDIT ── */}
+      {mode === 'mosaic' && step === 'mask-edit' && originalUrl && noBgUrl && (
+        <MaskEditor
+          originalUrl={originalUrl}
+          noBgUrl={noBgUrl}
+          onApply={(maskedUrl) => { setNoBgUrl(maskedUrl); setStep('pixelize') }}
+          onSkip={() => setStep('pixelize')}
+        />
+      )}
+
+      {/* ── MOSAIC: BRICK EDIT ── */}
+      {step === 'brick-edit' && mosaicData && (
+        <BrickEditor
+          pixelGrid={mosaicData.pixel_grid}
+          dimensions={mosaicData.dimensions}
+          activePalette={activePaletteForEditor}
+          onApply={(opt) => { setMosaicOptResult(opt as MosaicOptResult); setStep('result') }}
+          onBack={() => setStep('pixelize')}
+          onSkip={() => setStep('result')}
+        />
+      )}
+
       {/* ── MOSAIC: PIXELIZE CONFIG ── */}
       {mode === 'mosaic' && (step === 'pixelize' || step === 'pixelizing') && noBgUrl && (
         <MosaicConfigStep
@@ -607,7 +648,12 @@ export default function CreatePage() {
 
       {/* ── MOSAIC: RESULT ── */}
       {step === 'result' && mosaicData && (
-        <MosaicResult mosaicData={mosaicData} onBack={() => setStep('pixelize')} onReset={handleReset} />
+        <MosaicResult
+          mosaicData={mosaicData}
+          initialOptResult={mosaicOptResult ?? undefined}
+          onBack={() => setStep('brick-edit')}
+          onReset={handleReset}
+        />
       )}
 
       {/* ── 3D: MESH PREVIEW ── */}

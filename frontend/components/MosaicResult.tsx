@@ -45,23 +45,24 @@ export interface MosaicData {
 
 interface Props {
   mosaicData: MosaicData
+  initialOptResult?: OptimizeResult
   onBack: () => void
   onReset: () => void
 }
 
 type Tab = 'preview' | '3d' | 'bom'
 
-export default function MosaicResult({ mosaicData, onBack, onReset }: Props) {
+export default function MosaicResult({ mosaicData, initialOptResult, onBack, onReset }: Props) {
   const { preview, dimensions, color_summary, total_studs, pixel_grid, depth_preview, num_layers } = mosaicData
   const [tab, setTab]               = useState<Tab>('preview')
   const [optimizing, setOptimizing] = useState(false)
-  const [optResult, setOptResult]   = useState<OptimizeResult | null>(null)
+  const [optResult, setOptResult]   = useState<OptimizeResult | null>(initialOptResult ?? null)
   const [optError, setOptError]     = useState<string | null>(null)
 
-  // Auto-trigger optimization when component mounts
+  // Auto-trigger optimization on mount only if no pre-computed result
   useEffect(() => {
-    runOptimize()
-  }, [])
+    if (!initialOptResult) runOptimize()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function runOptimize() {
     setOptimizing(true); setOptError(null)
