@@ -28,7 +28,7 @@ interface BrickEditorProps {
   pixelGrid:     (number | null)[][]
   dimensions:    { w: number; h: number }
   activePalette: PaletteColor[]
-  onApply: (opt: OptimizeResult) => void
+  onApply: (opt: OptimizeResult, previewDataUrl: string, editedGrid: (number | null)[][]) => void
   onBack:  () => void
   onSkip:  () => void
 }
@@ -234,6 +234,44 @@ export default function BrickEditor({ pixelGrid, dimensions, activePalette, onAp
 
   const totalStuds = bom.reduce((s, e) => s + e.count, 0)
 
+  // ── Preview export ───────────────────────────────────────────────────────────
+
+  function generatePreviewUrl(): string {
+    const scale = 20
+    const off   = document.createElement('canvas')
+    off.width   = w * scale
+    off.height  = h * scale
+    const ctx   = off.getContext('2d')
+    if (!ctx) return ''
+    const grid  = gridRef.current
+
+    for (let row = 0; row < h; row++) {
+      for (let col = 0; col < w; col++) {
+        const x   = col * scale, y = row * scale
+        const idx = grid[row]?.[col] ?? null
+        if (idx === null) {
+          ctx.fillStyle = ((col + row) % 2 === 0) ? '#bbbbbb' : '#ffffff'
+          ctx.fillRect(x, y, scale, scale)
+          continue
+        }
+        const color = activePalette[idx]
+        if (!color) continue
+        const [r, g, b] = hexToRgb(color.hex)
+        ctx.fillStyle = color.hex
+        ctx.fillRect(x, y, scale, scale)
+        ctx.strokeStyle = `rgb(${Math.max(0,r-30)},${Math.max(0,g-30)},${Math.max(0,b-30)})`
+        ctx.lineWidth = 1; ctx.strokeRect(x, y, scale, scale)
+        const cx = x + scale / 2, cy = y + scale / 2, pr = scale * 0.22
+        ctx.beginPath(); ctx.arc(cx, cy, pr, 0, Math.PI * 2)
+        ctx.fillStyle = `rgb(${Math.min(255,r+40)},${Math.min(255,g+40)},${Math.min(255,b+40)})`
+        ctx.fill()
+        ctx.strokeStyle = `rgb(${Math.max(0,r-30)},${Math.max(0,g-30)},${Math.max(0,b-30)})`
+        ctx.lineWidth = 0.5; ctx.stroke()
+      }
+    }
+    return off.toDataURL('image/png')
+  }
+
   // ── Apply ─────────────────────────────────────────────────────────────────────
 
   async function handleApply() {
@@ -244,7 +282,9 @@ export default function BrickEditor({ pixelGrid, dimensions, activePalette, onAp
         body: JSON.stringify({ pixel_grid: gridRef.current }),
       })
       if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `Server error ${res.status}`) }
-      onApply(await res.json())
+      const previewDataUrl = generatePreviewUrl()
+      const editedGrid     = gridRef.current.map(r => [...r])
+      onApply(await res.json(), previewDataUrl, editedGrid)
     } catch (e) {
       alert(`Optimization failed: ${e}`)
     } finally {

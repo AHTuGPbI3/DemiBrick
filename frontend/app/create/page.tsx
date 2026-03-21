@@ -613,7 +613,11 @@ export default function CreatePage() {
           pixelGrid={mosaicData.pixel_grid}
           dimensions={mosaicData.dimensions}
           activePalette={activePaletteForEditor}
-          onApply={(opt) => { setMosaicOptResult(opt as MosaicOptResult); setStep('result') }}
+          onApply={(opt, previewUrl, editedGrid) => {
+            setMosaicOptResult(opt as MosaicOptResult)
+            setMosaicData(prev => prev ? { ...prev, preview: previewUrl, pixel_grid: editedGrid } : prev)
+            setStep('result')
+          }}
           onBack={() => setStep('pixelize')}
           onSkip={() => setStep('result')}
         />
@@ -651,7 +655,8 @@ export default function CreatePage() {
         <MosaicResult
           mosaicData={mosaicData}
           initialOptResult={mosaicOptResult ?? undefined}
-          onBack={() => setStep('brick-edit')}
+          onBackConfig={() => setStep('pixelize')}
+          onBackEdit={() => setStep('brick-edit')}
           onReset={handleReset}
         />
       )}

@@ -46,13 +46,14 @@ export interface MosaicData {
 interface Props {
   mosaicData: MosaicData
   initialOptResult?: OptimizeResult
-  onBack: () => void
+  onBackConfig: () => void
+  onBackEdit:   () => void
   onReset: () => void
 }
 
 type Tab = 'preview' | '3d' | 'bom'
 
-export default function MosaicResult({ mosaicData, initialOptResult, onBack, onReset }: Props) {
+export default function MosaicResult({ mosaicData, initialOptResult, onBackConfig, onBackEdit, onReset }: Props) {
   const { preview, dimensions, color_summary, total_studs, pixel_grid, depth_preview, num_layers } = mosaicData
   const [tab, setTab]               = useState<Tab>('preview')
   const [optimizing, setOptimizing] = useState(false)
@@ -265,8 +266,11 @@ export default function MosaicResult({ mosaicData, initialOptResult, onBack, onR
 
       {/* Actions */}
       <div className="flex gap-3 pt-1">
-        <button onClick={onBack} className="px-5 py-3 rounded-xl border border-gray-200 text-sm font-semibold text-gray-500 hover:border-gray-400">
-          ← Resolution
+        <button onClick={onBackConfig} className="px-5 py-3 rounded-xl border border-gray-200 text-sm font-semibold text-gray-500 hover:border-gray-400">
+          ← Config
+        </button>
+        <button onClick={onBackEdit} className="px-5 py-3 rounded-xl border border-gray-200 text-sm font-semibold text-gray-500 hover:border-gray-400">
+          ✏️ Edit
         </button>
         <button onClick={onReset} className="px-5 py-3 rounded-xl border border-gray-200 text-sm font-semibold text-gray-500 hover:border-gray-400">
           ↺ New photo
