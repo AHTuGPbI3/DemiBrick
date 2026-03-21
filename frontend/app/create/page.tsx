@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import ImageDropzone from '@/components/ImageDropzone'
 import MosaicResult from '@/components/MosaicResult'
 
@@ -156,6 +156,17 @@ export default function CreatePage() {
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [customIds, setCustomIds]             = useState<string[] | null>(null)
 
+  // Live preview (L1 = canvas, L2 = quality server preview)
+  const [l2Preview, setL2Preview]  = useState<string | null>(null)
+  const [l2Grid, setL2Grid]        = useState<(number | null)[][] | null>(null)
+  const [l2Dims, setL2Dims]        = useState<{ w: number; h: number } | null>(null)
+  const [l2Colors, setL2Colors]    = useState<ColorEntry[] | null>(null)
+  const [l2Studs, setL2Studs]      = useState<number>(0)
+  const [l2Loading, setL2Loading]  = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const canvasRef   = useRef<HTMLCanvasElement>(null)
+  const noBgImgRef  = useRef<HTMLImageElement | null>(null)
+
   // Fun facts ticker
   const [factIdx, setFactIdx] = useState(0)
   useEffect(() => {
@@ -189,6 +200,100 @@ export default function CreatePage() {
     return { filament_types: types.length ? types : ['PLA Basic'], custom_color_ids: [] }
   }
 
+  // ── Live preview helpers ────────────────────────────────────────────────────
+
+  function doInstantPreview() {
+    const img = noBgImgRef.current
+    const canvas = canvasRef.current
+    if (!img || !canvas || img.naturalWidth === 0) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const aspect = img.naturalWidth / img.naturalHeight
+    const pw = resolution
+    const ph = Math.max(1, Math.round(pw / aspect))
+
+    const off = document.createElement('canvas')
+    off.width = pw; off.height = ph
+    const octx = off.getContext('2d')!
+    octx.drawImage(img, 0, 0, pw, ph)
+    const px = octx.getImageData(0, 0, pw, ph)
+
+    const SCALE = Math.max(4, Math.floor(320 / pw))
+    canvas.width  = pw * SCALE
+    canvas.height = ph * SCALE
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    const activePal = BAMBU_COLORS.filter(c =>
+      customIds !== null
+        ? customIds.includes(c.id)
+        : (c.type === 'PLA Basic' ? usePlaBasic : usePlaMatte)
+    )
+    if (activePal.length === 0) return
+    const palRgb = activePal.map(c => ({
+      hex: c.hex,
+      r: parseInt(c.hex.slice(1, 3), 16),
+      g: parseInt(c.hex.slice(3, 5), 16),
+      b: parseInt(c.hex.slice(5, 7), 16),
+    }))
+
+    for (let y = 0; y < ph; y++) {
+      for (let x = 0; x < pw; x++) {
+        const i = (y * pw + x) * 4
+        const r = px.data[i], g = px.data[i + 1], b = px.data[i + 2], a = px.data[i + 3]
+        if (a < 128) continue
+        let best = palRgb[0], bestD = Infinity
+        for (const c of palRgb) {
+          const d = (r - c.r) ** 2 + (g - c.g) ** 2 + (b - c.b) ** 2
+          if (d < bestD) { bestD = d; best = c }
+        }
+        ctx.fillStyle = best.hex
+        ctx.fillRect(x * SCALE, y * SCALE, SCALE - 1, SCALE - 1)
+      }
+    }
+  }
+
+  function scheduleL2() {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(async () => {
+      if (!noBgUrl) return
+      setL2Loading(true)
+      try {
+        const resp = await fetch(`${API_URL}/api/preview`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: noBgUrl, resolution, ...getFilamentPayload() }),
+        })
+        if (!resp.ok) return
+        const data = await resp.json()
+        setL2Preview(data.preview)
+        setL2Grid(data.pixel_grid)
+        setL2Dims(data.dimensions)
+        setL2Colors(data.color_summary)
+        setL2Studs(data.total_studs)
+      } catch { /* silent */ } finally {
+        setL2Loading(false)
+      }
+    }, 500)
+  }
+
+  // Load noBg image and kick off L1 + L2 when entering pixelize step
+  useEffect(() => {
+    if (step !== 'pixelize' || !noBgUrl) return
+    setL2Preview(null); setL2Grid(null); setL2Dims(null); setL2Colors(null); setL2Studs(0)
+    const img = new Image()
+    img.onload = () => { noBgImgRef.current = img; doInstantPreview(); scheduleL2() }
+    img.src = noBgUrl
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [step, noBgUrl]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Refresh preview when mosaic settings change
+  useEffect(() => {
+    if (step !== 'pixelize' || !noBgImgRef.current) return
+    setL2Preview(null)
+    doInstantPreview()
+    scheduleL2()
+  }, [resolution, depthLayers, usePlaBasic, usePlaMatte, customIds]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Common ─────────────────────────────────────────────────────────────────
   function handleFile(file: File) {
     setOriginalFile(file); setOriginalUrl(URL.createObjectURL(file))
@@ -218,6 +323,8 @@ export default function CreatePage() {
     setStep('upload'); setOriginalFile(null); setOriginalUrl(null)
     setNoBgUrl(null); setMosaicData(null); setModel3dUrl(null)
     setVoxelData(null); setOpt3dResult(null); setError(null)
+    setL2Preview(null); setL2Grid(null); setL2Dims(null); setL2Colors(null); setL2Studs(0)
+    noBgImgRef.current = null
   }
 
   // ── Mosaic flow ────────────────────────────────────────────────────────────
@@ -225,12 +332,26 @@ export default function CreatePage() {
     if (!noBgUrl) return
     setStep('pixelizing'); setError(null)
     try {
-      const res = await fetch(`${API_URL}/api/pixelize`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: noBgUrl, resolution, depth_layers: depthLayers, ...getFilamentPayload() }),
-      })
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `Server error ${res.status}`) }
-      setMosaicData(await res.json()); setStep('result')
+      let data: MosaicData
+      if (l2Grid && l2Preview && l2Dims && l2Colors) {
+        // L2 data is fresh — skip repixelization, go straight to result
+        data = {
+          preview:       l2Preview,
+          pixel_grid:    l2Grid,
+          dimensions:    l2Dims,
+          color_summary: l2Colors,
+          total_studs:   l2Studs,
+        }
+      } else {
+        // L2 not ready — full pixelization
+        const res = await fetch(`${API_URL}/api/pixelize`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: noBgUrl, resolution, depth_layers: depthLayers, ...getFilamentPayload() }),
+        })
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `Server error ${res.status}`) }
+        data = await res.json()
+      }
+      setMosaicData(data); setStep('result')
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unknown error'); setStep('pixelize')
     }
@@ -467,8 +588,14 @@ export default function CreatePage() {
           isLoading={isLoading}
           onBack={() => setStep('preview')}
           onGo={handlePixelize}
-          goLabel={step === 'pixelizing' ? <Spinner label="Sorting bricks…" /> : 'Generate Mosaic →'}
+          goLabel={step === 'pixelizing'
+            ? <Spinner label={l2Grid ? 'Optimizing…' : 'Pixelizing…'} />
+            : (l2Grid ? 'Generate Final ✓' : 'Generate Mosaic →')}
           resolutions={RESOLUTIONS_MOSAIC}
+          canvasRef={canvasRef}
+          l2Preview={l2Preview}
+          l2Loading={l2Loading}
+          l2Studs={l2Studs}
         />
       )}
 
@@ -650,22 +777,56 @@ function MosaicConfigStep({
   usePlaBasic, setUsePlaBasic, usePlaMatte, setUsePlaMatte,
   showColorPicker, setShowColorPicker, customIds, setCustomIds,
   visibleColors, toggleCustomId, isLoading, onBack, onGo, goLabel,
+  canvasRef, l2Preview, l2Loading, l2Studs,
 }: any) {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4">
+      {/* Source images (compact) */}
+      <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1">
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest text-center">Original</p>
-          <div className="rounded-xl border border-gray-100 bg-gray-50 flex items-center justify-center" style={{ minHeight: 200 }}>
-            <img src={originalUrl} alt="Original" className="max-h-48 max-w-full object-contain" />
+          <div className="rounded-xl border border-gray-100 bg-gray-50 flex items-center justify-center" style={{ minHeight: 120 }}>
+            <img src={originalUrl} alt="Original" className="max-h-28 max-w-full object-contain" />
           </div>
         </div>
         <div className="space-y-1">
           <p className="text-xs font-bold text-[#FFD700] uppercase tracking-widest text-center">No Background</p>
           <div className="rounded-xl border border-gray-100 flex items-center justify-center"
-            style={{ minHeight: 200, backgroundImage: 'repeating-conic-gradient(#e5e7eb 0% 25%, white 0% 50%)', backgroundSize: '16px 16px' }}>
-            <img src={noBgUrl} alt="No BG" className="max-h-48 max-w-full object-contain" />
+            style={{ minHeight: 120, backgroundImage: 'repeating-conic-gradient(#e5e7eb 0% 25%, white 0% 50%)', backgroundSize: '16px 16px' }}>
+            <img src={noBgUrl} alt="No BG" className="max-h-28 max-w-full object-contain" />
           </div>
+        </div>
+      </div>
+
+      {/* Live preview panel (L1 canvas → L2 quality image) */}
+      <div className="relative rounded-2xl overflow-hidden border border-gray-100 bg-gray-50" style={{ minHeight: 180 }}>
+        {l2Preview ? (
+          <img
+            src={l2Preview} alt="Preview"
+            className="w-full object-contain"
+            style={{ imageRendering: 'pixelated', display: 'block' }}
+          />
+        ) : (
+          <canvas
+            ref={canvasRef}
+            className="w-full"
+            style={{ imageRendering: 'pixelated', display: 'block' }}
+          />
+        )}
+        {l2Loading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white/60 backdrop-blur-sm">
+            <Spinner label="Computing exact colors…" />
+          </div>
+        )}
+        <div className="absolute bottom-2 left-2 right-2 flex justify-between pointer-events-none">
+          <span className="text-xs bg-black/40 text-white px-2 py-0.5 rounded-full">
+            {l2Preview ? '✓ Exact Bambu colors' : '⚡ Quick preview — colors approximate'}
+          </span>
+          {l2Studs > 0 && (
+            <span className="text-xs bg-black/40 text-white px-2 py-0.5 rounded-full">
+              ~{l2Studs.toLocaleString()} studs
+            </span>
+          )}
         </div>
       </div>
 

@@ -157,6 +157,74 @@ async def pixelize_image(req: PixelizeRequest) -> dict[str, Any]:
     return response
 
 
+# ── /preview ──────────────────────────────────────────────────────────────────
+
+class PreviewRequest(BaseModel):
+    image: str                          # data:image/png;base64,...
+    resolution: int                     # 16 | 32 | 48 | 64
+    filament_types: list[str] = ["PLA Basic"]
+    custom_color_ids: list[str] = []
+
+
+@router.post("/preview")
+async def preview_mosaic(req: PreviewRequest) -> dict[str, Any]:
+    """Level 2: exact Bambu colors + pixel_grid, no brick optimization."""
+    if req.resolution not in VALID_RESOLUTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"resolution must be one of {list(VALID_RESOLUTIONS)}",
+        )
+    try:
+        header, b64data = req.image.split(",", 1)
+        img_bytes = base64.b64decode(b64data)
+        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image data: {e}")
+
+    if req.custom_color_ids:
+        set_active_palette(custom_ids=req.custom_color_ids)
+    else:
+        set_active_palette(filament_types=req.filament_types)
+
+    try:
+        result = pixelize(pil_img, req.resolution)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pixelization failed: {e}")
+
+    try:
+        preview_img = generate_preview(result["pixel_grid"], scale=20)
+        buf = io.BytesIO()
+        preview_img.save(buf, format="PNG")
+        preview_b64 = base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview generation failed: {e}")
+
+    from collections import Counter
+    palette = get_active_palette()
+    flat = [idx for row in result["pixel_grid"] for idx in row if idx is not None]
+    counts = Counter(flat)
+    color_summary = [
+        {
+            "color_id":      palette[idx]["id"],
+            "name":          palette[idx]["name"],
+            "hex":           palette[idx]["hex"],
+            "filament_type": palette[idx]["type"],
+            "count":         cnt,
+        }
+        for idx, cnt in sorted(counts.items(), key=lambda x: -x[1])
+    ]
+    total_studs = sum(c["count"] for c in color_summary)
+
+    return {
+        "preview":          f"data:image/png;base64,{preview_b64}",
+        "pixel_grid":       result["pixel_grid"],
+        "dimensions":       {"w": result["width_studs"], "h": result["height_studs"]},
+        "color_summary":    color_summary,
+        "total_studs":      total_studs,
+        "estimated_bricks": max(1, round(total_studs / 2.5)),
+    }
+
+
 # ── /optimize ─────────────────────────────────────────────────────────────────
 
 class OptimizeRequest(BaseModel):
@@ -171,6 +239,20 @@ async def optimize(req: OptimizeRequest) -> dict[str, Any]:
         result = optimize_layout(req.pixel_grid)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")
+    return result
+
+
+# ── /generate ─────────────────────────────────────────────────────────────────
+
+@router.post("/generate")
+async def generate_from_grid(req: OptimizeRequest) -> dict[str, Any]:
+    """Level 3: brick optimization on a pre-computed pixel_grid."""
+    if not req.pixel_grid:
+        raise HTTPException(status_code=400, detail="pixel_grid is empty")
+    try:
+        result = optimize_layout(req.pixel_grid)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
     return result
 
 
