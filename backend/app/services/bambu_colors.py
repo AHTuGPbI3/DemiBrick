@@ -71,6 +71,11 @@ BAMBU_PLA_MATTE = [
 
 ALL_COLORS = BAMBU_PLA_BASIC + BAMBU_PLA_MATTE
 
+# Perceptual weights for CIELAB distance: down-weight L* (brightness),
+# up-weight a* and b* (hue) so vivid colours don't map to similar-brightness
+# neutrals (e.g. bright magenta → brown).
+LAB_WEIGHTS = np.array([0.5, 1.5, 1.5], dtype=np.float32)
+
 # ── Active palette (module-level state) ──────────────────────────────────────
 
 _active_palette: list[dict] = []
@@ -110,6 +115,13 @@ def get_active_palette() -> list[dict]:
     return _active_palette
 
 
+def get_lab_array() -> np.ndarray:
+    """Return the pre-computed LAB array for the active palette."""
+    if _LAB_ARRAY is None:
+        set_active_palette()
+    return _LAB_ARRAY  # type: ignore[return-value]
+
+
 def get_color_by_id(color_id: str) -> dict | None:
     for c in ALL_COLORS:
         if c["id"] == color_id:
@@ -120,29 +132,29 @@ def get_color_by_id(color_id: str) -> dict | None:
 # ── Public matching API ───────────────────────────────────────────────────────
 
 def find_nearest_color(r: int, g: int, b: int) -> dict:
-    """Return nearest Bambu color dict for the given RGB."""
+    """Return nearest Bambu color dict for the given RGB (weighted CIELAB)."""
     if _LAB_ARRAY is None:
         set_active_palette()
-    lab = rgb2lab(np.array([[[r / 255.0, g / 255.0, b / 255.0]]], dtype=np.float32))[0, 0]
-    diffs = _LAB_ARRAY - lab
-    idx = int(np.argmin(np.sum(diffs ** 2, axis=1)))
+    lab  = rgb2lab(np.array([[[r / 255.0, g / 255.0, b / 255.0]]], dtype=np.float32))[0, 0]
+    diff = _LAB_ARRAY - lab  # type: ignore[operator]
+    idx  = int(np.argmin(np.sum(LAB_WEIGHTS * diff ** 2, axis=1)))
     return _active_palette[idx]
 
 
 def find_nearest_color_batch(pixels: np.ndarray) -> np.ndarray:
     """
-    Vectorised nearest-color matching.
+    Vectorised nearest-color matching with weighted CIELAB distance.
     pixels: uint8 array (H, W, 3)
     Returns index array (H, W) into current active palette.
     """
     if _LAB_ARRAY is None:
         set_active_palette()
     h, w, _ = pixels.shape
-    flat = pixels.reshape(-1, 3).astype(np.float32) / 255.0
-    lab_flat = rgb2lab(flat.reshape(1, -1, 3))[0]          # (N, 3)
-    diff = lab_flat[:, np.newaxis, :] - _LAB_ARRAY[np.newaxis, :, :]  # (N, M, 3)
-    dist = np.sum(diff ** 2, axis=2)                        # (N, M)
-    return np.argmin(dist, axis=1).reshape(h, w)            # (H, W)
+    flat     = pixels.reshape(-1, 3).astype(np.float32) / 255.0
+    lab_flat = rgb2lab(flat.reshape(1, -1, 3))[0]                          # (N, 3)
+    diff     = lab_flat[:, np.newaxis, :] - _LAB_ARRAY[np.newaxis, :, :]  # (N, M, 3)
+    dist     = np.sum(LAB_WEIGHTS * diff ** 2, axis=2)                     # (N, M)
+    return np.argmin(dist, axis=1).reshape(h, w)                           # (H, W)
 
 
 # Initialise at import time

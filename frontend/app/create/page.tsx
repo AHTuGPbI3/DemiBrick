@@ -152,7 +152,8 @@ export default function CreatePage() {
 
   // Filament selection
   const [usePlaBasic, setUsePlaBasic]         = useState(true)
-  const [usePlaMatte, setUsePlaMatte]         = useState(false)
+  const [usePlaMatte, setUsePlaMatte]         = useState(true)
+  const [useDithering, setUseDithering]       = useState(false)
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [customIds, setCustomIds]             = useState<string[] | null>(null)
 
@@ -244,7 +245,10 @@ export default function CreatePage() {
         if (a < 128) continue
         let best = palRgb[0], bestD = Infinity
         for (const c of palRgb) {
-          const d = (r - c.r) ** 2 + (g - c.g) ** 2 + (b - c.b) ** 2
+          // Redmean approximation — perceptually closer than plain RGB distance
+          const rMean = (r + c.r) / 2
+          const dr = r - c.r, dg = g - c.g, db = b - c.b
+          const d = (2 + rMean / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rMean) / 256) * db * db
           if (d < bestD) { bestD = d; best = c }
         }
         ctx.fillStyle = best.hex
@@ -261,7 +265,7 @@ export default function CreatePage() {
       try {
         const resp = await fetch(`${API_URL}/api/preview`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: noBgUrl, resolution, ...getFilamentPayload() }),
+          body: JSON.stringify({ image: noBgUrl, resolution, dithering: useDithering, ...getFilamentPayload() }),
         })
         if (!resp.ok) return
         const data = await resp.json()
@@ -292,7 +296,7 @@ export default function CreatePage() {
     setL2Preview(null)
     doInstantPreview()
     scheduleL2()
-  }, [resolution, depthLayers, usePlaBasic, usePlaMatte, customIds]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolution, depthLayers, usePlaBasic, usePlaMatte, customIds, useDithering]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Common ─────────────────────────────────────────────────────────────────
   function handleFile(file: File) {
@@ -346,7 +350,7 @@ export default function CreatePage() {
         // L2 not ready — full pixelization
         const res = await fetch(`${API_URL}/api/pixelize`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: noBgUrl, resolution, depth_layers: depthLayers, ...getFilamentPayload() }),
+          body: JSON.stringify({ image: noBgUrl, resolution, depth_layers: depthLayers, dithering: useDithering, ...getFilamentPayload() }),
         })
         if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `Server error ${res.status}`) }
         data = await res.json()
@@ -596,6 +600,8 @@ export default function CreatePage() {
           l2Preview={l2Preview}
           l2Loading={l2Loading}
           l2Studs={l2Studs}
+          useDithering={useDithering}
+          setUseDithering={setUseDithering}
         />
       )}
 
@@ -778,6 +784,7 @@ function MosaicConfigStep({
   showColorPicker, setShowColorPicker, customIds, setCustomIds,
   visibleColors, toggleCustomId, isLoading, onBack, onGo, goLabel,
   canvasRef, l2Preview, l2Loading, l2Studs,
+  useDithering, setUseDithering,
 }: any) {
   return (
     <div className="space-y-6">
@@ -874,6 +881,15 @@ function MosaicConfigStep({
           ))}
         </div>
       </div>
+
+      {/* Dithering toggle */}
+      <label className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all ${useDithering ? 'border-[#FFD700] bg-yellow-50' : 'border-gray-200'}`}>
+        <input type="checkbox" checked={useDithering} onChange={e => setUseDithering(e.target.checked)} className="accent-[#FFD700] w-4 h-4" />
+        <div>
+          <span className="text-sm font-semibold text-[#1A1A2E]">Smooth color transitions</span>
+          <span className="ml-2 text-xs text-gray-400">(dithering — recommended for photos)</span>
+        </div>
+      </label>
 
       <div className="flex gap-3">
         <button onClick={onBack} disabled={isLoading}

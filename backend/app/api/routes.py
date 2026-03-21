@@ -75,6 +75,7 @@ class PixelizeRequest(BaseModel):
     depth_layers: int = 1               # 1 = flat, 2-5 = relief
     filament_types: list[str] = ["PLA Basic"]
     custom_color_ids: list[str] = []    # if non-empty, overrides filament_types
+    dithering: bool = False             # Floyd-Steinberg dithering for gradients
 
 
 @router.post("/pixelize")
@@ -100,7 +101,7 @@ async def pixelize_image(req: PixelizeRequest) -> dict[str, Any]:
         set_active_palette(filament_types=req.filament_types)
 
     try:
-        result = pixelize(pil_img, req.resolution)
+        result = pixelize(pil_img, req.resolution, dithering=req.dithering)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pixelization failed: {e}")
 
@@ -164,6 +165,7 @@ class PreviewRequest(BaseModel):
     resolution: int                     # 16 | 32 | 48 | 64
     filament_types: list[str] = ["PLA Basic"]
     custom_color_ids: list[str] = []
+    dithering: bool = False             # Floyd-Steinberg dithering for gradients
 
 
 @router.post("/preview")
@@ -187,7 +189,7 @@ async def preview_mosaic(req: PreviewRequest) -> dict[str, Any]:
         set_active_palette(filament_types=req.filament_types)
 
     try:
-        result = pixelize(pil_img, req.resolution)
+        result = pixelize(pil_img, req.resolution, dithering=req.dithering)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pixelization failed: {e}")
 
@@ -223,6 +225,8 @@ async def preview_mosaic(req: PreviewRequest) -> dict[str, Any]:
         "total_studs":      total_studs,
         "estimated_bricks": max(1, round(total_studs / 2.5)),
     }
+
+
 
 
 # ── /optimize ─────────────────────────────────────────────────────────────────
