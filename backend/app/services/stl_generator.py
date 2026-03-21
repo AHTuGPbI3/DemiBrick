@@ -1,253 +1,328 @@
 """
-STL generator for LEGO-compatible plates.
-Generates realistic plate geometry: base + studs + anti-stud tubes.
+STL generator — LEGO-compatible brick geometry.
+
+Dimensions per Bartneck / official technical drawing #3001.
+All units: millimetres.  Studs are smooth (no logo, no text).
+
+Body clearance: 0.1 mm each side (0.2 mm total) so bricks slide
+next to each other without friction but without play.
 """
 
 import io
+import math
 import zipfile
 from typing import Any
 
 import numpy as np
 
-# LEGO dimensions in mm
-STUD_PITCH   = 8.0
-PLATE_HEIGHT = 3.2
-STUD_RADIUS  = 2.4    # outer radius
-STUD_HEIGHT  = 1.8
-TUBE_OUTER   = 3.25   # anti-stud tube outer radius
-TUBE_INNER   = 2.4    # anti-stud tube inner radius
-WALL         = 1.5    # plate wall thickness
-SEGMENTS     = 16     # polygon segments for cylinders
+# ── Physical constants (mm) ───────────────────────────────────────────────────
+STUD_PITCH   = 8.0          # centre-to-centre distance
+STUD_R       = 2.4          # stud radius  (diameter 4.8 mm)
+STUD_H       = 1.8          # stud height above body top
+WALL         = 1.2          # side / end wall thickness
+CEILING      = 1.0          # top wall (ceiling) thickness
+BRICK_H      = 9.6          # body height — standard brick  (3 plates)
+PLATE_H      = 3.2          # body height — plate
+CLEARANCE    = 0.2          # total XY clearance (0.1 mm per side)
+TUBE_OUT_R   = 6.51 / 2     # anti-stud tube outer radius
+TUBE_IN_R    = 4.80 / 2     # anti-stud tube inner radius  (= stud diameter)
+RIB_T        = 0.8          # rib thickness (1×N bricks)
+RIB_D        = 0.6          # rib protrusion depth from inner wall
+SEG          = 24           # cylinder polygon segments  (≥24 for smooth print)
 
 
-def _cylinder_mesh(
-    cx: float, cz: float,
-    radius: float, height: float,
-    y_base: float,
-    segments: int = SEGMENTS,
-    invert: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build cylinder triangles. Returns (vertices, faces)."""
-    angles = np.linspace(0, 2 * np.pi, segments, endpoint=False)
-    top_y  = y_base + height
-    bot_y  = y_base
+# ── Primitive helpers ─────────────────────────────────────────────────────────
 
-    verts = []
-    # Bottom centre
-    verts.append([cx, bot_y, cz])
-    # Bottom ring
-    for a in angles:
-        verts.append([cx + radius * np.cos(a), bot_y, cz + radius * np.sin(a)])
-    # Top centre
-    verts.append([cx, top_y, cz])
-    # Top ring
-    for a in angles:
-        verts.append([cx + radius * np.cos(a), top_y, cz + radius * np.sin(a)])
+def _p(x: float, y: float, z: float) -> np.ndarray:
+    return np.array([x, y, z], dtype=np.float32)
 
-    verts = np.array(verts, dtype=np.float32)
-    n = segments
 
-    faces = []
-    # Bottom cap
+def _quad(a: np.ndarray, b: np.ndarray,
+          c: np.ndarray, d: np.ndarray) -> list[np.ndarray]:
+    """Two CCW triangles from a planar quad a→b→c→d.
+    Normal = (b-a) × (c-a) by right-hand rule."""
+    return [
+        np.array([a, b, c], dtype=np.float32),
+        np.array([a, c, d], dtype=np.float32),
+    ]
+
+
+def _circle(cx: float, cy: float, z: float,
+            r: float, n: int) -> list[np.ndarray]:
+    return [_p(cx + r * math.cos(2 * math.pi * i / n),
+               cy + r * math.sin(2 * math.pi * i / n), z)
+            for i in range(n)]
+
+
+def _cylinder(cx: float, cy: float, z0: float,
+              r: float, h: float, n: int = SEG,
+              cap_bot: bool = True, cap_top: bool = True) -> list[np.ndarray]:
+    """Solid cylinder, normals pointing outward."""
+    tris: list[np.ndarray] = []
+    bot = _circle(cx, cy, z0,     r, n)
+    top = _circle(cx, cy, z0 + h, r, n)
+    ct  = _p(cx, cy, z0 + h)
+    cb  = _p(cx, cy, z0)
     for i in range(n):
-        faces.append([0, 1 + (i + 1) % n, 1 + i])
-    # Top cap
-    top_c = n + 1
+        j = (i + 1) % n
+        tris += _quad(bot[i], bot[j], top[j], top[i])          # side
+        if cap_top:
+            tris.append(np.array([ct, top[i], top[j]], dtype=np.float32))
+        if cap_bot:
+            tris.append(np.array([cb, bot[j], bot[i]], dtype=np.float32))
+    return tris
+
+
+def _tube(cx: float, cy: float, z0: float,
+          outer_r: float, inner_r: float,
+          h: float, n: int = SEG) -> list[np.ndarray]:
+    """Hollow annular tube — watertight."""
+    tris: list[np.ndarray] = []
+    ob = _circle(cx, cy, z0,     outer_r, n)
+    ot = _circle(cx, cy, z0 + h, outer_r, n)
+    ib = _circle(cx, cy, z0,     inner_r, n)
+    it = _circle(cx, cy, z0 + h, inner_r, n)
     for i in range(n):
-        faces.append([top_c, top_c + 1 + i, top_c + 1 + (i + 1) % n])
-    # Side quads → triangles
-    for i in range(n):
-        a = 1 + i
-        b = 1 + (i + 1) % n
-        c = top_c + 1 + (i + 1) % n
-        d = top_c + 1 + i
-        faces.append([a, b, c])
-        faces.append([a, c, d])
-
-    if invert:
-        faces = [[f[0], f[2], f[1]] for f in faces]
-
-    return verts, np.array(faces, dtype=np.int32)
+        j = (i + 1) % n
+        tris += _quad(ob[i], ob[j], ot[j], ot[i])          # outer wall
+        tris += _quad(ib[j], ib[i], it[i], it[j])          # inner wall (rev)
+        tris += _quad(ot[i], ot[j], it[j], it[i])          # top annulus
+        tris += _quad(ob[j], ob[i], ib[i], ib[j])          # bot annulus (rev)
+    return tris
 
 
-def _box_mesh(x0: float, y0: float, z0: float,
-              x1: float, y1: float, z1: float) -> tuple[np.ndarray, np.ndarray]:
-    """Axis-aligned box."""
-    verts = np.array([
-        [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
-        [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
-    ], dtype=np.float32)
-    faces = np.array([
-        [0,1,2],[0,2,3],   # front
-        [5,4,7],[5,7,6],   # back
-        [4,0,3],[4,3,7],   # left
-        [1,5,6],[1,6,2],   # right
-        [3,2,6],[3,6,7],   # top
-        [4,5,1],[4,1,0],   # bottom
-    ], dtype=np.int32)
-    return verts, faces
+def _box(x0: float, y0: float, z0: float,
+         x1: float, y1: float, z1: float) -> list[np.ndarray]:
+    """Solid axis-aligned box, normals pointing outward, 6 faces."""
+    p = _p
+    tris: list[np.ndarray] = []
+    tris += _quad(p(x0,y0,z0), p(x1,y0,z0), p(x1,y0,z1), p(x0,y0,z1))  # front -y
+    tris += _quad(p(x1,y1,z0), p(x0,y1,z0), p(x0,y1,z1), p(x1,y1,z1))  # back  +y
+    tris += _quad(p(x0,y1,z0), p(x0,y0,z0), p(x0,y0,z1), p(x0,y1,z1))  # left  -x
+    tris += _quad(p(x1,y0,z0), p(x1,y1,z0), p(x1,y1,z1), p(x1,y0,z1))  # right +x
+    tris += _quad(p(x0,y0,z1), p(x1,y0,z1), p(x1,y1,z1), p(x0,y1,z1))  # top   +z
+    tris += _quad(p(x1,y0,z0), p(x0,y0,z0), p(x0,y1,z0), p(x1,y1,z0))  # bot   -z
+    return tris
 
 
-def _merge(meshes: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
-    all_verts, all_faces = [], []
-    offset = 0
-    for v, f in meshes:
-        all_verts.append(v)
-        all_faces.append(f + offset)
-        offset += len(v)
-    return np.vstack(all_verts), np.vstack(all_faces)
+def _hollow_body(bw: float, bd: float, bh: float) -> list[np.ndarray]:
+    """
+    Hollow brick body open at the bottom (z = 0).
+
+    Geometry:
+      • 4 outer side faces + outer top face
+      • 4 inner side faces + inner ceiling face
+      • 4 bottom rim strips connecting outer and inner walls at z = 0
+    """
+    W  = WALL
+    C  = CEILING
+    ch = bh - C          # cavity height (floor to ceiling)
+    # Inner bounds
+    ix0, ix1 = W, bw - W
+    iy0, iy1 = W, bd - W
+    p = _p
+    tris: list[np.ndarray] = []
+
+    # ── Outer faces (5, no bottom) ────────────────────────────────────────────
+    tris += _quad(p(0,0,0),  p(bw,0,0),  p(bw,0,bh),  p(0,0,bh) )   # front -y
+    tris += _quad(p(bw,bd,0),p(0,bd,0),  p(0,bd,bh),  p(bw,bd,bh))   # back  +y
+    tris += _quad(p(0,bd,0), p(0,0,0),   p(0,0,bh),   p(0,bd,bh) )   # left  -x
+    tris += _quad(p(bw,0,0), p(bw,bd,0), p(bw,bd,bh), p(bw,0,bh))    # right +x
+    tris += _quad(p(0,0,bh), p(bw,0,bh), p(bw,bd,bh), p(0,bd,bh))    # top   +z
+
+    # ── Inner faces (reversed normals — cavity walls) ─────────────────────────
+    # inner front  (+y normal → faces interior)
+    tris += _quad(p(ix1,iy0,0), p(ix0,iy0,0), p(ix0,iy0,ch), p(ix1,iy0,ch))
+    # inner back   (-y normal)
+    tris += _quad(p(ix0,iy1,0), p(ix1,iy1,0), p(ix1,iy1,ch), p(ix0,iy1,ch))
+    # inner left   (+x normal)
+    tris += _quad(p(ix0,iy0,0), p(ix0,iy1,0), p(ix0,iy1,ch), p(ix0,iy0,ch))
+    # inner right  (-x normal)
+    tris += _quad(p(ix1,iy1,0), p(ix1,iy0,0), p(ix1,iy0,ch), p(ix1,iy1,ch))
+    # ceiling      (-z normal, faces down into cavity)
+    tris += _quad(p(ix0,iy0,ch), p(ix0,iy1,ch), p(ix1,iy1,ch), p(ix1,iy0,ch))
+
+    # ── Bottom rim (4 strips, normal -z) ──────────────────────────────────────
+    # front strip  x=[0,bw]          y=[0, W]
+    tris += _quad(p(ix0,iy0,0), p(ix1,iy0,0), p(bw,0,0),   p(0,0,0)  )
+    # back strip   x=[0,bw]          y=[bd-W, bd]
+    tris += _quad(p(ix1,iy1,0), p(ix0,iy1,0), p(0,bd,0),   p(bw,bd,0))
+    # left strip   x=[0, W]          y=[W, bd-W]
+    tris += _quad(p(ix0,iy1,0), p(ix0,iy0,0), p(0,iy0,0),  p(0,iy1,0))
+    # right strip  x=[bw-W, bw]      y=[W, bd-W]
+    tris += _quad(p(ix1,iy0,0), p(ix1,iy1,0), p(bw,iy1,0), p(bw,iy0,0))
+
+    return tris
 
 
-def _write_stl(verts: np.ndarray, faces: np.ndarray) -> bytes:
-    """Binary STL."""
+def _rib(x0: float, y_c: float, z0: float,
+         depth: float, thickness: float, height: float) -> list[np.ndarray]:
+    """Rectangular rib protruding from an inner wall."""
+    return _box(x0, y_c - thickness / 2, z0,
+                x0 + depth, y_c + thickness / 2, z0 + height)
+
+
+# ── STL writer ────────────────────────────────────────────────────────────────
+
+def _write_stl(triangles: list[np.ndarray]) -> bytes:
+    """Binary STL.  Normals computed from vertex winding."""
     buf = io.BytesIO()
-    buf.write(b"\x00" * 80)                      # header
-    buf.write(np.uint32(len(faces)).tobytes())    # triangle count
-
-    v0 = verts[faces[:, 0]]
-    v1 = verts[faces[:, 1]]
-    v2 = verts[faces[:, 2]]
-    normals = np.cross(v1 - v0, v2 - v0)
-    norms = np.linalg.norm(normals, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1, norms)
-    normals /= norms
-
-    for i in range(len(faces)):
-        buf.write(normals[i].astype(np.float32).tobytes())
-        buf.write(v0[i].astype(np.float32).tobytes())
-        buf.write(v1[i].astype(np.float32).tobytes())
-        buf.write(v2[i].astype(np.float32).tobytes())
-        buf.write(b"\x00\x00")                   # attribute byte count
-
+    buf.write(b"DemiBrick" + b"\x00" * 71)           # 80-byte header
+    buf.write(np.uint32(len(triangles)).tobytes())
+    for tri in triangles:
+        v0, v1, v2 = tri[0], tri[1], tri[2]
+        n = np.cross(v1 - v0, v2 - v0).astype(np.float32)
+        ln = float(np.linalg.norm(n))
+        if ln > 0:
+            n /= ln
+        buf.write(n.tobytes())
+        buf.write(v0.astype(np.float32).tobytes())
+        buf.write(v1.astype(np.float32).tobytes())
+        buf.write(v2.astype(np.float32).tobytes())
+        buf.write(b"\x00\x00")
     return buf.getvalue()
 
 
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def generate_brick_stl(
+    w: int,
+    d: int,
+    h: int = 1,
+    calibration: dict[str, float] | None = None,
+) -> bytes:
+    """
+    Generate a LEGO-compatible brick / plate STL.
+
+    Parameters
+    ----------
+    w : int   — width in studs
+    d : int   — depth in studs
+    h : int   — height in plate-heights  (1 = plate 3.2 mm, 3 = brick 9.6 mm)
+    calibration : optional tolerance adjustments in mm
+        stud_adj  — add to stud diameter   (+0.1 → tighter, -0.1 → looser)
+        hole_adj  — add to tube inner dia  (+0.1 → looser fit for incoming studs)
+        body_adj  — add to body XY dims    (usually 0)
+    """
+    cal       = calibration or {}
+    body_h    = h * PLATE_H                                   # total body height
+    body_w    = w * STUD_PITCH - CLEARANCE + cal.get("body_adj", 0.0)
+    body_d    = d * STUD_PITCH - CLEARANCE + cal.get("body_adj", 0.0)
+    cav_h     = body_h - CEILING                              # cavity depth
+    stud_r    = STUD_R    + cal.get("stud_adj", 0.0) / 2
+    tube_in_r = TUBE_IN_R + cal.get("hole_adj", 0.0) / 2
+
+    tris: list[np.ndarray] = []
+
+    # ── 1. Hollow body ────────────────────────────────────────────────────────
+    tris += _hollow_body(body_w, body_d, body_h)
+
+    # ── 2. Studs (smooth cylinders, no logo) ─────────────────────────────────
+    for sx in range(w):
+        for sy in range(d):
+            cx = (sx + 0.5) * STUD_PITCH - CLEARANCE / 2
+            cy = (sy + 0.5) * STUD_PITCH - CLEARANCE / 2
+            tris += _cylinder(cx, cy, body_h, stud_r, STUD_H,
+                               cap_bot=False, cap_top=True)
+
+    # ── 3. Internal geometry ──────────────────────────────────────────────────
+    if w >= 2:
+        # Anti-stud tubes at every stud-grid intersection inside the body
+        for tx in range(1, w):
+            for ty in range(1, d):
+                tcx = tx * STUD_PITCH - CLEARANCE / 2
+                tcy = ty * STUD_PITCH - CLEARANCE / 2
+                tris += _tube(tcx, tcy, 0.0, TUBE_OUT_R, tube_in_r, cav_h)
+
+    elif w == 1 and d >= 2:
+        # Ribs on both inner side walls for 1×N bricks / plates
+        for ty in range(1, d):
+            rib_cy = ty * STUD_PITCH - CLEARANCE / 2
+            # Left inner wall (x = WALL) → rib protrudes rightward
+            tris += _rib(WALL, rib_cy, 0.0, RIB_D, RIB_T, cav_h)
+            # Right inner wall (x = body_w - WALL) → rib protrudes leftward
+            tris += _rib(body_w - WALL - RIB_D, rib_cy, 0.0, RIB_D, RIB_T, cav_h)
+
+    return _write_stl(tris)
+
+
 def generate_plate_stl(width: int, length: int) -> bytes:
-    """
-    Generate STL for a LEGO-compatible plate of size width×length studs.
-    """
-    plate_w = width  * STUD_PITCH
-    plate_l = length * STUD_PITCH
-
-    meshes: list[tuple[np.ndarray, np.ndarray]] = []
-
-    # Outer shell (hollow box)
-    meshes.append(_box_mesh(0, 0, 0, plate_w, PLATE_HEIGHT, plate_l))
-
-    # Studs on top
-    for sx in range(width):
-        for sl in range(length):
-            cx = (sx + 0.5) * STUD_PITCH
-            cz = (sl + 0.5) * STUD_PITCH
-            v, f = _cylinder_mesh(cx, cz, STUD_RADIUS, STUD_HEIGHT, PLATE_HEIGHT)
-            meshes.append((v, f))
-
-    # Anti-stud tubes inside (only for 2×N+ plates)
-    if width >= 2 and length >= 2:
-        for sx in range(width - 1):
-            for sl in range(length - 1):
-                cx = (sx + 1) * STUD_PITCH
-                cz = (sl + 1) * STUD_PITCH
-                # Outer
-                v_out, f_out = _cylinder_mesh(cx, cz, TUBE_OUTER, PLATE_HEIGHT - WALL, WALL)
-                # Inner (inverted normals = hollow)
-                v_in, f_in = _cylinder_mesh(cx, cz, TUBE_INNER, PLATE_HEIGHT - WALL, WALL, invert=True)
-                meshes.append((v_out, f_out))
-                meshes.append((v_in, f_in))
-
-    verts, faces = _merge(meshes)
-    return _write_stl(verts, faces)
+    """Convenience alias — plate is h=1."""
+    return generate_brick_stl(width, length, h=1)
 
 
 def generate_calibration_strip() -> bytes:
     """
-    Generate a calibration strip STL with 5 stud variants for tolerance testing.
-    Stud heights: 1.6, 1.7, 1.8, 1.9, 2.0 mm — print and find best fit.
+    Five 1×1 plates side by side, each with a different stud height:
+    1.6 / 1.7 / 1.8 / 1.9 / 2.0 mm — print once, find the best fit
+    against a real LEGO brick.
     """
-    meshes: list[tuple[np.ndarray, np.ndarray]] = []
-    heights = [1.6, 1.7, 1.8, 1.9, 2.0]
-    for i, sh in enumerate(heights):
-        x_off = i * STUD_PITCH * 2
-        # Baseplate for this section
-        meshes.append(_box_mesh(x_off, 0, 0, x_off + STUD_PITCH * 1.9, PLATE_HEIGHT, STUD_PITCH * 1.9))
+    tris: list[np.ndarray] = []
+    for i, sh in enumerate([1.6, 1.7, 1.8, 1.9, 2.0]):
+        xoff = i * STUD_PITCH * 2.0
+        bw   = STUD_PITCH - CLEARANCE
+        bd   = STUD_PITCH - CLEARANCE
+        bh   = PLATE_H
+        # Solid base (no cavity — simpler for calibration piece)
+        tris += [np.array([[xoff + v[0], v[1], v[2]], *rest], dtype=np.float32)
+                 if False else tri
+                 for tri in _box(xoff, 0, 0, xoff + bw, bd, bh)]
         # Single stud with this height variant
-        cx = x_off + STUD_PITCH
-        cz = STUD_PITCH
-        v, f = _cylinder_mesh(cx, cz, STUD_RADIUS, sh, PLATE_HEIGHT)
-        meshes.append((v, f))
-    verts, faces = _merge(meshes)
-    return _write_stl(verts, faces)
-
-
-def generate_brick_stl(w: int, d: int, h: int = 1) -> bytes:
-    """
-    Generate STL for a LEGO-compatible brick or plate.
-    w×d studs, h plate-heights tall (h=1 → plate 3.2mm, h=3 → brick 9.6mm).
-    """
-    plate_w = w * STUD_PITCH
-    plate_d = d * STUD_PITCH
-    brick_h = h * PLATE_HEIGHT
-
-    meshes: list[tuple[np.ndarray, np.ndarray]] = []
-    meshes.append(_box_mesh(0, 0, 0, plate_w, brick_h, plate_d))
-
-    # Studs on top
-    for sx in range(w):
-        for sd in range(d):
-            cx = (sx + 0.5) * STUD_PITCH
-            cz = (sd + 0.5) * STUD_PITCH
-            v, f = _cylinder_mesh(cx, cz, STUD_RADIUS, STUD_HEIGHT, brick_h)
-            meshes.append((v, f))
-
-    verts, faces = _merge(meshes)
-    return _write_stl(verts, faces)
+        cx = xoff + bw / 2
+        cy = bd / 2
+        tris += _cylinder(cx, cy, bh, STUD_R, sh, cap_bot=False, cap_top=True)
+    return _write_stl(tris)
 
 
 def generate_all_stls(bom: list[dict[str, Any]]) -> bytes:
     """
-    Generate a ZIP file with one STL per unique plate type in BOM,
-    plus a README.txt with printing recommendations.
+    Generate a ZIP with one STL per unique brick / plate type in the BOM,
+    plus a README.txt with print recommendations.
     """
+    # Collect unique piece types
+    piece_types: dict[str, tuple[int, int, int]] = {}   # name → (w, d, h_plates)
+    for entry in bom:
+        name = entry.get("name", "")
+        if name in piece_types:
+            continue
+        try:
+            kind, dims = name.replace("×", "x").lower().split(" ", 1)
+            w_str, d_str = dims.split("x")
+            w, d = int(w_str), int(d_str)
+            h = 3 if kind == "brick" else 1
+            piece_types[name] = (w, d, h)
+        except Exception:
+            continue
+
+    # Count quantities
+    qty: dict[str, int] = {}
+    for entry in bom:
+        n = entry.get("name", "")
+        qty[n] = qty.get(n, 0) + entry.get("count", 0)
+
+    readme_lines = [
+        "DemiBrick — 3D Print Guide",
+        "=" * 40,
+        "",
+        "Recommended settings:",
+        "  Layer height : 0.16 – 0.20 mm",
+        "  Nozzle       : 0.4 mm",
+        "  Infill       : 15 – 20 %",
+        "  Material     : PLA (standard) or PETG (stronger)",
+        "  Supports     : none needed",
+        "  Orientation  : studs facing up (best stud quality)",
+        "",
+        "Parts list:",
+    ]
+    for name, (w, d, _) in piece_types.items():
+        readme_lines.append(f"  {name:20s}  {qty.get(name, 0):>4} pcs")
+
     buf = io.BytesIO()
-
-    # Unique piece types (plates and bricks)
-    plate_types: dict[str, tuple[int, int, int]] = {}  # name → (w, d, h_layers)
-    for entry in bom:
-        name = entry["name"]  # e.g. "Plate 2×4" or "Brick 2×4"
-        if name not in plate_types:
-            try:
-                parts = name.replace("×", "x").split(" ")
-                kind = parts[0].lower()   # "plate" or "brick"
-                dims = parts[1].split("x")
-                w, d = int(dims[0]), int(dims[1])
-                h_layers = 3 if kind == "brick" else 1
-                plate_types[name] = (w, d, h_layers)
-            except Exception:
-                continue
-
-    readme = "DemiBrick — 3D Print Instructions\n"
-    readme += "=" * 40 + "\n\n"
-    readme += "Recommended print settings:\n"
-    readme += "  Layer height:  0.2 mm\n"
-    readme += "  Infill:        20%\n"
-    readme += "  Material:      PLA\n"
-    readme += "  Support:       None\n\n"
-    readme += "Parts:\n"
-
-    # Count by part type
-    part_counts: dict[str, int] = {}
-    for entry in bom:
-        part_counts[entry["name"]] = part_counts.get(entry["name"], 0) + entry["count"]
-
-    for name, (w, d, hl) in plate_types.items():
-        count = part_counts.get(name, 0)
-        readme += f"  {name}: {count} pcs\n"
-
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("README.txt", readme)
-        for name, (w, d, hl) in plate_types.items():
-            stl_bytes = generate_brick_stl(w, d, hl)
-            filename = f"{name.replace(' ', '_').replace('×', 'x')}.stl"
+        zf.writestr("README.txt", "\n".join(readme_lines))
+        for name, (w, d, h) in piece_types.items():
+            stl_bytes = generate_brick_stl(w, d, h)
+            filename = name.replace(" ", "_").replace("×", "x") + ".stl"
             zf.writestr(filename, stl_bytes)
 
     return buf.getvalue()
