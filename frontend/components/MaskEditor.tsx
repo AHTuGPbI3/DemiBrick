@@ -453,8 +453,10 @@ export default function MaskEditor({ originalUrl, noBgUrl, onApply, onSkip }: Ma
           <button onClick={() => setZoom(z => Math.min(8,   +(z * 1.25).toFixed(2)))} className="px-2 py-1 text-xs rounded border border-gray-700 hover:border-gray-500">+</button>
           <button onClick={fitToScreen}                                                className="px-2 py-1 text-xs rounded border border-gray-700 hover:border-gray-500 ml-1">Fit</button>
         </div>
-        <button onClick={onSkip}      className="px-4 py-1.5 text-xs rounded-lg border border-gray-500 hover:border-gray-300 ml-2">Skip →</button>
-        <button onClick={handleApply} className="px-4 py-1.5 text-xs rounded-lg bg-[#FFD700] text-black font-bold hover:bg-yellow-400">Apply →</button>
+        <div className="flex gap-1 ml-2 flex-shrink-0">
+          <button onClick={onSkip}      className="px-4 py-1.5 text-xs rounded-lg border border-gray-500 hover:border-gray-300">Skip →</button>
+          <button onClick={handleApply} className="px-4 py-1.5 text-xs rounded-lg bg-[#FFD700] text-black font-bold hover:bg-yellow-400">Apply →</button>
+        </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
